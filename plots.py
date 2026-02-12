@@ -95,6 +95,8 @@ def plot_crbpct_distribution(parent_df):
 def plot_covariate_balance(smd_before, smd_after=None, title_suffix="",
                            filename="P2_covariate_balance"):
     """Love plot of standardized mean differences."""
+    if smd_before is None or smd_before.empty:
+        return
     fig, ax = plt.subplots(figsize=(8, max(6, len(smd_before) * 0.5)))
 
     covariates = smd_before["covariate"].values
@@ -315,6 +317,9 @@ def plot_impact_by_bucket(parent_df):
     outcomes_to_plot = ["tempImpactBps", "permImpact5mBps", "ArrivalSlippageBps"]
     outcomes_to_plot = [o for o in outcomes_to_plot if o in parent_df.columns]
 
+    if len(outcomes_to_plot) == 0:
+        return
+
     fig, axes = plt.subplots(1, len(outcomes_to_plot),
                              figsize=(6 * len(outcomes_to_plot), 6))
     if len(outcomes_to_plot) == 1:
@@ -354,6 +359,9 @@ def plot_impact_by_bucket(parent_df):
 
 def plot_signed_markout_curves(signed_df):
     """Line plot of mean rev{x}s_bps over horizons, CRB vs non-CRB."""
+    if signed_df is None or signed_df.empty:
+        print("    [E1] No signed markout data, skipping.")
+        return
     fig, ax = plt.subplots(figsize=(10, 6))
 
     for is_int, label, color in [(True, "CRB Fills", COLOR_CRB),
@@ -381,6 +389,9 @@ def plot_signed_markout_curves(signed_df):
 
 def plot_abs_markout_curves(abs_df):
     """Line plot of mean |rev{x}s_bps| over horizons, CRB vs non-CRB."""
+    if abs_df is None or abs_df.empty:
+        print("    [E2] No absolute markout data, skipping.")
+        return
     fig, ax = plt.subplots(figsize=(10, 6))
 
     for is_int, label, color in [(True, "CRB Fills", COLOR_CRB),
@@ -407,6 +418,9 @@ def plot_abs_markout_curves(abs_df):
 
 def plot_markout_by_inttype(inttype_df, absolute=False):
     """Multi-line markout plot broken down by intType."""
+    if inttype_df is None or inttype_df.empty:
+        print("    [E3] No intType markout data, skipping.")
+        return
     fig, ax = plt.subplots(figsize=(12, 6))
     palette = sns.color_palette(PALETTE_INTTYPE,
                                 n_colors=inttype_df["group"].nunique())
@@ -480,11 +494,12 @@ def plot_within_order_markouts(within_results):
         ax.set_ylabel("Mean Diff: CRB − Non-CRB (|bps|)")
         ax.set_title("Absolute Markout (Within-Order)")
 
-    n_orders = signed["n_orders"].iloc[0] if not signed.empty else "?"
-    fig.suptitle(
-        f"E4: Within-Order Markout Comparison (n={n_orders:,} paired orders)",
-        fontsize=14,
-    )
+    if not signed.empty:
+        n_orders = signed["n_orders"].iloc[0]
+        title = f"E4: Within-Order Markout Comparison (n={n_orders:,} paired orders)"
+    else:
+        title = "E4: Within-Order Markout Comparison"
+    fig.suptitle(title, fontsize=14)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     _savefig(fig, "E4_within_order_markouts")
 
@@ -500,6 +515,9 @@ def plot_markout_by_spread(spread_df):
         return
     spread_buckets = sorted(spread_df["spread_bucket"].dropna().unique(), key=str)
     n = len(spread_buckets)
+    if n == 0:
+        print("    [E5] No valid spread buckets, skipping.")
+        return
     ncols = min(3, n)
     nrows = (n + ncols - 1) // ncols
 
@@ -555,6 +573,9 @@ def plot_markout_distribution(exec_df, horizons_to_plot=None):
         horizons_to_plot = available[:4]  # first 4 by numeric horizon
 
     n = len(horizons_to_plot)
+    if n == 0:
+        print("    [E6] No markout horizons available, skipping.")
+        return
     ncols = min(2, n)
     nrows = (n + ncols - 1) // ncols
 
