@@ -61,7 +61,9 @@ class MarkoutAccumulator:
         self._cnt = {}   # count
 
     def add_chunk(self, df):
-        for grp, sub in df.groupby(self.group_col, observed=True):
+        # drop rows where the group key is NaN
+        valid = df[df[self.group_col].notna()] if self.group_col in df.columns else df
+        for grp, sub in valid.groupby(self.group_col, observed=True):
             if grp not in self._sum:
                 self._sum[grp] = {c: 0.0 for c in self.value_cols}
                 self._ssq[grp] = {c: 0.0 for c in self.value_cols}
@@ -163,9 +165,13 @@ def compute_markout_by_inttype(exec_path=None, df=None, horizons=None):
 
     def _label_chunk(chunk):
         chunk = chunk.copy()
-        chunk["_inttype_label"] = chunk["intType"].fillna("non-CRB")
+        if "intType" in chunk.columns:
+            chunk["_inttype_label"] = chunk["intType"].fillna("non-CRB")
+        else:
+            chunk["_inttype_label"] = "non-CRB"
         # for non-internalized fills, ensure label is "non-CRB"
-        chunk.loc[chunk["isInt"] != True, "_inttype_label"] = "non-CRB"
+        if "isInt" in chunk.columns:
+            chunk.loc[chunk["isInt"] != True, "_inttype_label"] = "non-CRB"
         return chunk
 
     if df is not None:
@@ -186,8 +192,12 @@ def compute_abs_markout_by_inttype(exec_path=None, df=None, horizons=None):
 
     def _label_chunk(chunk):
         chunk = chunk.copy()
-        chunk["_inttype_label"] = chunk["intType"].fillna("non-CRB")
-        chunk.loc[chunk["isInt"] != True, "_inttype_label"] = "non-CRB"
+        if "intType" in chunk.columns:
+            chunk["_inttype_label"] = chunk["intType"].fillna("non-CRB")
+        else:
+            chunk["_inttype_label"] = "non-CRB"
+        if "isInt" in chunk.columns:
+            chunk.loc[chunk["isInt"] != True, "_inttype_label"] = "non-CRB"
         return chunk
 
     if df is not None:
@@ -316,40 +326,65 @@ def compute_markout_by_spread(exec_path=None, df=None, horizons=None,
     rev_cols = _rev_cols(horizons=horizons)
     acc = MarkoutAccumulator("_spread_isint", rev_cols)
 
-    def _bucket_chunk(chunk, edges=None):
+    def _bucket_chunk(chunk, edges):
         chunk = chunk.copy()
-        if edges is not None:
-            chunk["_spread_bucket"] = pd.cut(chunk["spread"], bins=edges,
-                                              include_lowest=True)
+        if len(edges) < 2:
+            chunk["_spread_bucket"] = "all"
         else:
-            chunk["_spread_bucket"] = pd.qcut(chunk["spread"], q=n_buckets,
-                                               duplicates="drop")
+            chunk["_spread_bucket"] = pd.cut(
+                chunk["spread"], bins=edges, include_lowest=True
+            ).astype(str)
         chunk["_spread_isint"] = (
             chunk["_spread_bucket"].astype(str) + " | "
             + chunk["isInt"].astype(str)
         )
+        # drop rows where spread is NaN (bucket = "nan")
+        chunk = chunk[chunk["_spread_bucket"] != "nan"]
         return chunk
 
+    def _compute_edges(spread_values):
+        vals = spread_values.dropna()
+        if len(vals) == 0:
+            return np.array([])
+        edges = np.nanpercentile(vals, np.linspace(0, 100, n_buckets + 1))
+        return np.unique(edges)
+
     if df is not None:
-        # compute global spread quintile edges
-        edges = np.nanpercentile(df["spread"], np.linspace(0, 100, n_buckets + 1))
-        edges = np.unique(edges)
+        edges = _compute_edges(df["spread"])
+        if len(edges) < 2:
+            return pd.DataFrame(columns=[
+                "group", "column", "mean", "se", "ci_lower", "ci_upper",
+                "n", "spread_bucket", "isInt", "horizon_sec",
+            ])
         acc.add_chunk(_bucket_chunk(df, edges))
     else:
         # two-pass: first compute global spread edges, then accumulate
         spread_sample = []
         for chunk in iter_execution_chunks(exec_path):
-            spread_sample.append(chunk["spread"].dropna().sample(
-                n=min(100_000, len(chunk)), random_state=42
-            ))
+            spread_vals = chunk["spread"].dropna()
+            if len(spread_vals) > 0:
+                spread_sample.append(spread_vals.sample(
+                    n=min(100_000, len(spread_vals)), random_state=42
+                ))
+        if not spread_sample:
+            return pd.DataFrame(columns=[
+                "group", "column", "mean", "se", "ci_lower", "ci_upper",
+                "n", "spread_bucket", "isInt", "horizon_sec",
+            ])
         spread_all = pd.concat(spread_sample)
-        edges = np.nanpercentile(spread_all, np.linspace(0, 100, n_buckets + 1))
-        edges = np.unique(edges)
+        edges = _compute_edges(spread_all)
+        if len(edges) < 2:
+            return pd.DataFrame(columns=[
+                "group", "column", "mean", "se", "ci_lower", "ci_upper",
+                "n", "spread_bucket", "isInt", "horizon_sec",
+            ])
 
         for chunk in iter_execution_chunks(exec_path):
             acc.add_chunk(_bucket_chunk(chunk, edges))
 
     result = acc.result()
+    if result.empty:
+        return result
     # parse composite key back into separate columns
     result[["spread_bucket", "isInt"]] = result["group"].str.split(" \\| ", expand=True)
     result["isInt"] = result["isInt"].map({"True": True, "False": False})

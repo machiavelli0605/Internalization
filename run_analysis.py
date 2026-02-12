@@ -198,19 +198,21 @@ def main():
             exec_sample = load_execution_data(args.exec_data)
             if len(exec_sample) > args.exec_sample:
                 exec_sample = exec_sample.sample(n=args.exec_sample, random_state=42)
-        except MemoryError:
-            print("    Full load failed; sampling via chunks ...")
+        except (MemoryError, Exception) as e:
+            print(f"    Full load failed ({e.__class__.__name__}); sampling via chunks ...")
             from data_prep import iter_execution_chunks
             chunks = []
             total = 0
             for chunk in iter_execution_chunks(args.exec_data):
                 n_take = min(len(chunk), args.exec_sample - total)
+                if n_take <= 0:
+                    break
                 chunks.append(chunk.sample(n=n_take, random_state=42)
                               if n_take < len(chunk) else chunk)
                 total += n_take
                 if total >= args.exec_sample:
                     break
-            exec_sample = pd.concat(chunks, ignore_index=True)
+            exec_sample = pd.concat(chunks, ignore_index=True) if chunks else None
 
         generate_execution_plots(exec_results, exec_df_sample=exec_sample)
 

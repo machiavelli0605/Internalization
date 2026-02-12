@@ -40,10 +40,11 @@ def derive_parent_columns(df):
     df = df.copy()
 
     # -- Venue percentages ------------------------------------------------
+    safe_filled = df["FilledQty"].replace(0, np.nan)
     for col in ["CRBQty", "ATSPINQty", "DarkQty", "LitQty",
                 "InvertedQty", "ConditionalQty"]:
         pct_col = col.replace("Qty", "Pct")
-        df[pct_col] = df[col] / df["FilledQty"]
+        df[pct_col] = (df[col] / safe_filled).fillna(0.0)
 
     # -- Treatment indicators ---------------------------------------------
     df["hasCRB"] = df["CRBPct"] > 0
@@ -65,7 +66,8 @@ def derive_parent_columns(df):
     # tempImpactBps = 1e4 * Side * (amid - emid) / amid
     #   positive = favorable (market moved with order)
     #   negative = adverse   (market moved against order)
-    df["tempImpactBps"] = 1e4 * df["Side"] * (df["amid"] - df["emid"]) / df["amid"]
+    safe_amid = df["amid"].replace(0, np.nan)
+    df["tempImpactBps"] = 1e4 * df["Side"] * (df["amid"] - df["emid"]) / safe_amid
 
     # Derive rev{x}m_mid from rev{x}m_bps:
     #   rev{x}m_bps ≈ 1e4 * Side * (emid - rev{x}m_mid) / emid
@@ -81,18 +83,20 @@ def derive_parent_columns(df):
             continue
 
         df[mid_col] = df["emid"] * (1 - df["Side"] * df[rev_col] / 1e4)
-        df[perm_col] = 1e4 * df["Side"] * (df["amid"] - df[mid_col]) / df["amid"]
+        df[perm_col] = 1e4 * df["Side"] * (df["amid"] - df[mid_col]) / safe_amid
 
     # -- Duration ---------------------------------------------------------
-    df["EffectiveStartTime"] = pd.to_datetime(df["EffectiveStartTime"])
-    df["EffectiveEndTime"] = pd.to_datetime(df["EffectiveEndTime"])
+    if not pd.api.types.is_datetime64_any_dtype(df["EffectiveStartTime"]):
+        df["EffectiveStartTime"] = pd.to_datetime(df["EffectiveStartTime"])
+    if not pd.api.types.is_datetime64_any_dtype(df["EffectiveEndTime"]):
+        df["EffectiveEndTime"] = pd.to_datetime(df["EffectiveEndTime"])
     df["duration_mins"] = (
         (df["EffectiveEndTime"] - df["EffectiveStartTime"]).dt.total_seconds() / 60
-    )
+    ).clip(lower=0)
 
     # -- Log transforms ---------------------------------------------------
-    df["log_notional"] = np.log1p(df["Notional"])
-    df["log_adv"] = np.log1p(df["adv"])
+    df["log_notional"] = np.log1p(df["Notional"].clip(lower=0))
+    df["log_adv"] = np.log1p(df["adv"].clip(lower=0))
 
     return df
 

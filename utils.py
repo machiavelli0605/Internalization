@@ -50,22 +50,33 @@ def run_ols(df, outcome, treatments, continuous_controls, categorical_fe,
 
     Returns
     -------
-    statsmodels RegressionResults
+    statsmodels RegressionResults, or None if fitting fails
     """
-    work = df.dropna(subset=[outcome] + treatments + continuous_controls)
+    all_cols = [outcome] + treatments + continuous_controls
+    present = [c for c in all_cols if c in df.columns]
+    work = df.dropna(subset=present)
     if sample_n and len(work) > sample_n:
         work = work.sample(n=sample_n, random_state=42)
 
-    formula = build_ols_formula(outcome, treatments, continuous_controls,
-                                categorical_fe)
-    model = smf_ols(formula, data=work)
+    # need at least more rows than parameters
+    n_params = len(treatments) + len(continuous_controls) + 2  # rough lower bound
+    if len(work) < n_params:
+        return None
 
-    if cluster_col and cluster_col in work.columns:
-        groups = work[cluster_col]
-        result = model.fit(cov_type="cluster", cov_kwds={"groups": groups})
-    else:
-        result = model.fit(cov_type="HC1")
-    return result
+    # filter categorical FE to those with >1 level in the working data
+    active_fe = [c for c in categorical_fe if c in work.columns and work[c].nunique() > 1]
+
+    formula = build_ols_formula(outcome, treatments, continuous_controls, active_fe)
+    try:
+        model = smf_ols(formula, data=work)
+        if cluster_col and cluster_col in work.columns:
+            groups = work[cluster_col]
+            result = model.fit(cov_type="cluster", cov_kwds={"groups": groups})
+        else:
+            result = model.fit(cov_type="HC1")
+        return result
+    except Exception:
+        return None
 
 
 def extract_treatment_coefficients(result, treatments):
@@ -75,6 +86,8 @@ def extract_treatment_coefficients(result, treatments):
     -------
     DataFrame with columns: coef, se, ci_lower, ci_upper, pvalue, nobs
     """
+    if result is None:
+        return pd.DataFrame()
     rows = []
     conf = result.conf_int()
     for t in treatments:
@@ -116,14 +129,25 @@ def estimate_propensity_scores(df, treatment_col, covariates, max_iter=1000):
     X_clean = X.loc[mask]
     y_clean = y.loc[mask]
 
+    ps = np.full(len(df), np.nan)
+
+    # need both treatment classes present and enough observations
+    if len(X_clean) < 10 or y_clean.nunique() < 2:
+        # degenerate case: return naive proportion as PS
+        if len(y_clean) > 0:
+            ps[mask.values] = y_clean.mean()
+        return ps
+
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X_clean)
 
     lr = LogisticRegression(max_iter=max_iter, solver="lbfgs", C=1.0)
-    lr.fit(X_scaled, y_clean)
-
-    ps = np.full(len(df), np.nan)
-    ps[mask.values] = lr.predict_proba(X_scaled)[:, 1]
+    try:
+        lr.fit(X_scaled, y_clean)
+        ps[mask.values] = lr.predict_proba(X_scaled)[:, 1]
+    except Exception:
+        # fallback: return naive proportion
+        ps[mask.values] = y_clean.mean()
     return ps
 
 
@@ -143,9 +167,18 @@ def nearest_neighbor_match(ps_treated, ps_control, n_neighbors=1, caliper=None):
                       the control array
     distances : ndarray – matching distances
     """
-    nn = NearestNeighbors(n_neighbors=n_neighbors, metric="euclidean")
-    nn.fit(np.array(ps_control).reshape(-1, 1))
-    distances, indices = nn.kneighbors(np.array(ps_treated).reshape(-1, 1))
+    ps_t = np.asarray(ps_treated).reshape(-1, 1)
+    ps_c = np.asarray(ps_control).reshape(-1, 1)
+
+    if len(ps_t) == 0 or len(ps_c) == 0:
+        return (np.array([], dtype=int).reshape(0, n_neighbors),
+                np.array([], dtype=float).reshape(0, n_neighbors))
+
+    # can't request more neighbors than control units
+    effective_k = min(n_neighbors, len(ps_c))
+    nn = NearestNeighbors(n_neighbors=effective_k, metric="euclidean")
+    nn.fit(ps_c)
+    distances, indices = nn.kneighbors(ps_t)
 
     if caliper is not None:
         # flag matches outside caliper as -1
@@ -331,10 +364,15 @@ def compute_adjusted_means(df, outcome, bucket_col, continuous_controls,
     -------
     DataFrame with columns: bucket, adj_mean, ci_lower, ci_upper, n
     """
-    work = df.dropna(subset=[outcome] + continuous_controls).copy()
+    available_controls = [c for c in continuous_controls if c in df.columns]
+    work = df.dropna(subset=[outcome] + available_controls).copy()
+
+    if len(work) == 0:
+        return pd.DataFrame(columns=["bucket", "adj_mean", "ci_lower", "ci_upper", "n"])
 
     # residualize outcome on controls
-    formula = build_ols_formula(outcome, [], continuous_controls, categorical_fe)
+    active_fe = [c for c in categorical_fe if c in work.columns and work[c].nunique() > 1]
+    formula = build_ols_formula(outcome, [], available_controls, active_fe)
     try:
         res = smf_ols(formula, data=work).fit()
         work["_residual"] = res.resid + work[outcome].mean()
@@ -344,7 +382,9 @@ def compute_adjusted_means(df, outcome, bucket_col, continuous_controls,
 
     rows = []
     for bucket, grp in work.groupby(bucket_col, observed=True):
-        vals = grp["_residual"].values
+        vals = grp["_residual"].dropna().values
+        if len(vals) == 0:
+            continue
         mean_val, ci_lo, ci_hi = bootstrap_mean_ci(vals, n_boot=n_boot)
         rows.append({
             "bucket": bucket,

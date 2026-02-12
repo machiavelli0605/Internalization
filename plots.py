@@ -57,20 +57,28 @@ OUTCOME_LABELS = {
 
 def plot_crbpct_distribution(parent_df):
     """Histogram of CRBPct among isInt=True orders."""
-    enabled = parent_df[parent_df["isInt"] == True]
+    enabled = parent_df[parent_df["isInt"].astype(bool)]
+
+    if len(enabled) == 0:
+        print("    [P1] No enabled orders, skipping.")
+        return
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     # (a) full distribution including zeros
-    axes[0].hist(enabled["CRBPct"], bins=50, edgecolor="white", color=COLOR_CRB,
-                 alpha=0.8)
+    axes[0].hist(enabled["CRBPct"].dropna(), bins=50, edgecolor="white",
+                 color=COLOR_CRB, alpha=0.8)
     axes[0].set_xlabel("CRBPct (Principal Internalization %)")
     axes[0].set_ylabel("Count")
     axes[0].set_title("CRBPct Distribution (Enabled Orders)")
 
     # (b) non-zero only
-    nz = enabled.loc[enabled["CRBPct"] > 0, "CRBPct"]
-    axes[1].hist(nz, bins=50, edgecolor="white", color=COLOR_CRB, alpha=0.8)
+    nz = enabled.loc[enabled["CRBPct"] > 0, "CRBPct"].dropna()
+    if len(nz) == 0:
+        axes[1].text(0.5, 0.5, "No non-zero CRBPct", ha="center", va="center",
+                     transform=axes[1].transAxes, fontsize=12, color="grey")
+    else:
+        axes[1].hist(nz, bins=50, edgecolor="white", color=COLOR_CRB, alpha=0.8)
     axes[1].set_xlabel("CRBPct (Principal Internalization %)")
     axes[1].set_ylabel("Count")
     axes[1].set_title("CRBPct Distribution (Non-Zero Only)")
@@ -129,6 +137,8 @@ def plot_regression_coefficients(reg_results):
     panels = [(t, d) for t, d in panels if d is not None and not d.empty]
 
     n_panels = len(panels)
+    if n_panels == 0:
+        return
     fig, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 6), sharey=False)
     if n_panels == 1:
         axes = [axes]
@@ -260,12 +270,18 @@ def plot_psm_outcomes(psm_results):
         ax = axes[0]
         pivot = ipw.pivot(index="outcome", columns="group", values="weighted_mean")
         pivot = pivot.reindex([o for o in OUTCOME_VARS if o in pivot.index])
-        pivot.index = [OUTCOME_LABELS.get(o, o) for o in pivot.index]
-        pivot.plot.barh(ax=ax, color=[COLOR_TREATED, COLOR_CONTROL])
-        ax.set_xlabel("IPW-Weighted Mean (bps)")
-        ax.set_title("IPW Outcome Comparison")
-        ax.axvline(0, color="grey", linestyle="--", alpha=0.5)
-        ax.legend(title="Group")
+        # ensure treated comes before control so colors align
+        avail_groups = [g for g in ["treated", "control"] if g in pivot.columns]
+        pivot = pivot.reindex(columns=avail_groups)
+        if not pivot.empty and len(avail_groups) > 0:
+            pivot.index = [OUTCOME_LABELS.get(o, o) for o in pivot.index]
+            colors = [COLOR_TREATED if g == "treated" else COLOR_CONTROL
+                      for g in avail_groups]
+            pivot.plot.barh(ax=ax, color=colors)
+            ax.set_xlabel("IPW-Weighted Mean (bps)")
+            ax.set_title("IPW Outcome Comparison")
+            ax.axvline(0, color="grey", linestyle="--", alpha=0.5)
+            ax.legend(title="Group")
 
     # --- NN matched outcomes ---
     nn = psm_results.get("nn_outcomes")
@@ -306,9 +322,15 @@ def plot_impact_by_bucket(parent_df):
 
     for ax, outcome in zip(axes, outcomes_to_plot):
         data = parent_df.dropna(subset=[outcome, "CRBPctBucket"])
+        if len(data) == 0:
+            ax.text(0.5, 0.5, "No data", ha="center", va="center",
+                    transform=ax.transAxes, fontsize=12, color="grey")
+            continue
         # winsorize for plotting
         lo, hi = data[outcome].quantile([0.01, 0.99])
         data = data[(data[outcome] >= lo) & (data[outcome] <= hi)]
+        if len(data) == 0:
+            continue
 
         sns.boxplot(
             data=data, x="CRBPctBucket", y=outcome, ax=ax,
@@ -473,7 +495,10 @@ def plot_within_order_markouts(within_results):
 
 def plot_markout_by_spread(spread_df):
     """Faceted line plots: markout curves by spread quintile, CRB vs non-CRB."""
-    spread_buckets = sorted(spread_df["spread_bucket"].unique(), key=str)
+    if spread_df.empty or "spread_bucket" not in spread_df.columns:
+        print("    [E5] No spread data available, skipping.")
+        return
+    spread_buckets = sorted(spread_df["spread_bucket"].dropna().unique(), key=str)
     n = len(spread_buckets)
     ncols = min(3, n)
     nrows = (n + ncols - 1) // ncols
@@ -522,11 +547,12 @@ def plot_markout_distribution(exec_df, horizons_to_plot=None):
     expects a DataFrame (possibly a sample).
     """
     if horizons_to_plot is None:
-        # pick a few representative horizons
+        # pick a few representative horizons, sorted numerically
         available = [c for c in exec_df.columns
                      if c.startswith("rev") and c.endswith("s_bps")
                      and not c.startswith("abs_")]
-        horizons_to_plot = sorted(available)[:4]  # first 4
+        available.sort(key=lambda c: int(c.split("rev")[1].split("s_bps")[0]))
+        horizons_to_plot = available[:4]  # first 4 by numeric horizon
 
     n = len(horizons_to_plot)
     ncols = min(2, n)
@@ -540,9 +566,13 @@ def plot_markout_distribution(exec_df, horizons_to_plot=None):
         for is_int, label, color in [(True, "CRB", COLOR_CRB),
                                       (False, "Non-CRB", COLOR_NON_CRB)]:
             vals = exec_df.loc[exec_df["isInt"] == is_int, col].dropna()
+            if len(vals) < 2 or vals.nunique() < 2:
+                continue
             # winsorize for plotting
             lo, hi = vals.quantile([0.01, 0.99])
             vals = vals[(vals >= lo) & (vals <= hi)]
+            if len(vals) < 2:
+                continue
             if len(vals) > 500_000:
                 vals = vals.sample(500_000, random_state=42)
             sns.kdeplot(vals, ax=ax, color=color, label=label, linewidth=1.5)

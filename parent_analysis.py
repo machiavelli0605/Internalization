@@ -98,7 +98,7 @@ def descriptive_summary(df):
         "p90": crb_nz.quantile(0.90),
         "n_nonzero": len(crb_nz),
         "n_enabled": len(enabled),
-        "pct_with_crb": len(crb_nz) / len(enabled) * 100,
+        "pct_with_crb": len(crb_nz) / len(enabled) * 100 if len(enabled) > 0 else 0,
     }])
 
     # --- Mean outcomes by CRBPctBucket -----------------------------------
@@ -134,48 +134,39 @@ def run_all_regressions(df, cluster_col="RIC"):
 
     results = {}
 
-    # --- ITT: isInt on full population -----------------------------------
-    itt_res = []
-    itt_coefs = []
-    for outcome in OUTCOME_VARS:
-        res = run_ols(df, outcome, ["isInt"], all_controls, all_fe,
-                      cluster_col=cluster_col, sample_n=sample_n)
-        itt_res.append(res)
-        coef_df = extract_treatment_coefficients(res, ["isInt"])
-        coef_df["outcome"] = outcome
-        itt_coefs.append(coef_df)
+    def _run_batch(data, treatments, label):
+        """Run OLS for all outcomes, collecting results and coefficients."""
+        res_list = []
+        coef_list = []
+        for outcome in OUTCOME_VARS:
+            res = run_ols(data, outcome, treatments, all_controls, all_fe,
+                          cluster_col=cluster_col, sample_n=sample_n)
+            res_list.append(res)
+            coef_df = extract_treatment_coefficients(res, treatments)
+            if not coef_df.empty:
+                coef_df["outcome"] = outcome
+                coef_list.append(coef_df)
+        coefs = pd.concat(coef_list, ignore_index=True) if coef_list else pd.DataFrame()
+        return res_list, coefs
 
+    # --- ITT: isInt on full population -----------------------------------
+    itt_res, itt_coefs = _run_batch(df, ["isInt"], "ITT")
     results["itt_results"] = itt_res
-    results["itt_coefficients"] = pd.concat(itt_coefs, ignore_index=True)
+    results["itt_coefficients"] = itt_coefs
 
     # --- Dose-response: CRBPct + ATSPINPct on full population ------------
-    dose_res = []
-    dose_coefs = []
-    for outcome in OUTCOME_VARS:
-        res = run_ols(df, outcome, TREATMENT_COLS_DOSE, all_controls, all_fe,
-                      cluster_col=cluster_col, sample_n=sample_n)
-        dose_res.append(res)
-        coef_df = extract_treatment_coefficients(res, TREATMENT_COLS_DOSE)
-        coef_df["outcome"] = outcome
-        dose_coefs.append(coef_df)
-
+    dose_res, dose_coefs = _run_batch(df, TREATMENT_COLS_DOSE, "dose")
     results["dose_results"] = dose_res
-    results["dose_coefficients"] = pd.concat(dose_coefs, ignore_index=True)
+    results["dose_coefficients"] = dose_coefs
 
-    # --- Within-enabled: hasCRB among isInt=True -------------------------
-    enabled = df[df["isInt"] == True].copy()
-    en_res = []
-    en_coefs = []
-    for outcome in OUTCOME_VARS:
-        res = run_ols(enabled, outcome, ["CRBPct"], all_controls, all_fe,
-                      cluster_col=cluster_col, sample_n=sample_n)
-        en_res.append(res)
-        coef_df = extract_treatment_coefficients(res, ["CRBPct"])
-        coef_df["outcome"] = outcome
-        en_coefs.append(coef_df)
-
+    # --- Within-enabled: CRBPct among isInt=True -------------------------
+    enabled = df[df["isInt"].astype(bool)].copy()
+    if len(enabled) > 0:
+        en_res, en_coefs = _run_batch(enabled, ["CRBPct"], "enabled")
+    else:
+        en_res, en_coefs = [], pd.DataFrame()
     results["itt_enabled_results"] = en_res
-    results["itt_enabled_coefficients"] = pd.concat(en_coefs, ignore_index=True)
+    results["itt_enabled_coefficients"] = en_coefs
 
     return results
 
@@ -208,21 +199,32 @@ def run_psm_analysis(df, treatment_col="hasCRB", max_sample=2_000_000,
       - "nn_outcomes": DataFrame – matched mean outcomes
       - "propensity_scores": Series
     """
-    work = df.dropna(subset=PSM_COVARIATES + [treatment_col]).copy()
-    results = {}
+    available_covs = [c for c in PSM_COVARIATES if c in df.columns]
+    work = df.dropna(subset=available_covs + [treatment_col]).copy()
+    results = {
+        "smd_before": pd.DataFrame(),
+        "smd_after_ipw": pd.DataFrame(),
+        "smd_after_nn": pd.DataFrame(),
+        "ipw_outcomes": pd.DataFrame(),
+        "nn_outcomes": pd.DataFrame(),
+        "propensity_scores": pd.Series(dtype=float),
+    }
+
+    if len(work) < 20 or work[treatment_col].astype(bool).nunique() < 2:
+        return results
 
     # --- Propensity scores -----------------------------------------------
-    ps = estimate_propensity_scores(work, treatment_col, PSM_COVARIATES)
+    ps = estimate_propensity_scores(work, treatment_col, available_covs)
     work["ps"] = ps
     results["propensity_scores"] = work["ps"]
 
     # --- SMD before ------------------------------------------------------
-    results["smd_before"] = compute_smd(work, treatment_col, PSM_COVARIATES)
+    results["smd_before"] = compute_smd(work, treatment_col, available_covs)
 
     # --- IPW (full data) ------------------------------------------------
     weights = compute_ipw_weights(ps, work[treatment_col].astype(int))
     results["smd_after_ipw"] = compute_weighted_smd(
-        work, treatment_col, PSM_COVARIATES, weights
+        work, treatment_col, available_covs, weights
     )
 
     ipw_rows = []
@@ -258,7 +260,8 @@ def run_psm_analysis(df, treatment_col="hasCRB", max_sample=2_000_000,
         ps_t = treated["ps"].values
         ps_c = control["ps"].values
 
-        caliper = caliper_mult * work_nn["ps"].std()
+        ps_std = work_nn["ps"].std()
+        caliper = caliper_mult * ps_std if ps_std > 0 else 0.1
         indices, distances = nearest_neighbor_match(ps_t, ps_c, caliper=caliper)
 
         # build matched dataset
@@ -272,27 +275,34 @@ def run_psm_analysis(df, treatment_col="hasCRB", max_sample=2_000_000,
             matched_c.assign(**{treatment_col: False}),
         ], ignore_index=True)
         results["smd_after_nn"] = compute_smd(
-            matched_all, treatment_col, PSM_COVARIATES
+            matched_all, treatment_col, available_covs
         )
 
-        # Outcome comparison
+        # Outcome comparison — keep pairs aligned (same positional index)
         nn_rows = []
         for outcome in OUTCOME_VARS:
             if outcome not in matched_t.columns:
                 continue
-            mt_vals = matched_t[outcome].dropna()
-            mc_vals = matched_c[outcome].dropna()
+            t_vals = matched_t[outcome].values
+            c_vals = matched_c[outcome].values
+            # drop pairs where either side is NaN
+            valid = np.isfinite(t_vals) & np.isfinite(c_vals)
+            t_valid = t_vals[valid]
+            c_valid = c_vals[valid]
+            if len(t_valid) == 0:
+                continue
+            pair_diff = t_valid - c_valid
             diff_mean, diff_lo, diff_hi = bootstrap_mean_ci(
-                mt_vals.values - mc_vals.iloc[:len(mt_vals)].values, n_boot=1000
+                pair_diff, n_boot=1000
             )
             nn_rows.append({
                 "outcome": outcome,
-                "treated_mean": mt_vals.mean(),
-                "control_mean": mc_vals.mean(),
+                "treated_mean": t_valid.mean(),
+                "control_mean": c_valid.mean(),
                 "diff": diff_mean,
                 "diff_ci_lower": diff_lo,
                 "diff_ci_upper": diff_hi,
-                "n_pairs": len(mt_vals),
+                "n_pairs": len(t_valid),
             })
         results["nn_outcomes"] = pd.DataFrame(nn_rows)
     else:
