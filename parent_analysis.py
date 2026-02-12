@@ -102,10 +102,14 @@ def descriptive_summary(df):
     }])
 
     # --- Mean outcomes by CRBPctBucket -----------------------------------
-    bucket_stats = (
-        df.groupby("CRBPctBucket", observed=True)[OUTCOME_VARS]
-        .agg(["mean", "std", "count"])
-    )
+    available_outcomes = [o for o in OUTCOME_VARS if o in df.columns]
+    if available_outcomes:
+        bucket_stats = (
+            df.groupby("CRBPctBucket", observed=True)[available_outcomes]
+            .agg(["mean", "std", "count"])
+        )
+    else:
+        bucket_stats = pd.DataFrame()
     results["outcome_by_bucket"] = bucket_stats
 
     return results

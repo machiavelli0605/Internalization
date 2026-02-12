@@ -61,8 +61,10 @@ class MarkoutAccumulator:
         self._cnt = {}   # count
 
     def add_chunk(self, df):
+        if self.group_col not in df.columns:
+            return
         # drop rows where the group key is NaN
-        valid = df[df[self.group_col].notna()] if self.group_col in df.columns else df
+        valid = df[df[self.group_col].notna()]
         for grp, sub in valid.groupby(self.group_col, observed=True):
             if grp not in self._sum:
                 self._sum[grp] = {c: 0.0 for c in self.value_cols}
@@ -126,8 +128,8 @@ def compute_signed_markout_curves(exec_path=None, df=None, horizons=None):
             acc.add_chunk(chunk)
 
     result = acc.result()
-    # add horizon for convenience
-    result["horizon_sec"] = result["column"].str.extract(r"rev(\d+)s_bps").astype(float)
+    if not result.empty:
+        result["horizon_sec"] = result["column"].str.extract(r"rev(\d+)s_bps").astype(float)
     return result
 
 
@@ -147,7 +149,8 @@ def compute_abs_markout_curves(exec_path=None, df=None, horizons=None):
             acc.add_chunk(chunk)
 
     result = acc.result()
-    result["horizon_sec"] = result["column"].str.extract(r"abs_rev(\d+)s_bps").astype(float)
+    if not result.empty:
+        result["horizon_sec"] = result["column"].str.extract(r"abs_rev(\d+)s_bps").astype(float)
     return result
 
 
@@ -181,7 +184,8 @@ def compute_markout_by_inttype(exec_path=None, df=None, horizons=None):
             acc.add_chunk(_label_chunk(chunk))
 
     result = acc.result()
-    result["horizon_sec"] = result["column"].str.extract(r"rev(\d+)s_bps").astype(float)
+    if not result.empty:
+        result["horizon_sec"] = result["column"].str.extract(r"rev(\d+)s_bps").astype(float)
     return result
 
 
@@ -207,7 +211,8 @@ def compute_abs_markout_by_inttype(exec_path=None, df=None, horizons=None):
             acc.add_chunk(_label_chunk(chunk))
 
     result = acc.result()
-    result["horizon_sec"] = result["column"].str.extract(r"abs_rev(\d+)s_bps").astype(float)
+    if not result.empty:
+        result["horizon_sec"] = result["column"].str.extract(r"abs_rev(\d+)s_bps").astype(float)
     return result
 
 
@@ -323,10 +328,16 @@ def compute_markout_by_spread(exec_path=None, df=None, horizons=None,
     -------
     DataFrame with columns: spread_bucket, isInt, column, horizon_sec, mean, se, ...
     """
+    empty_result = pd.DataFrame(columns=[
+        "group", "column", "mean", "se", "ci_lower", "ci_upper",
+        "n", "spread_bucket", "isInt", "horizon_sec",
+    ])
     rev_cols = _rev_cols(horizons=horizons)
     acc = MarkoutAccumulator("_spread_isint", rev_cols)
 
     def _bucket_chunk(chunk, edges):
+        if "spread" not in chunk.columns or "isInt" not in chunk.columns:
+            return chunk.iloc[:0]  # empty frame, nothing to accumulate
         chunk = chunk.copy()
         if len(edges) < 2:
             chunk["_spread_bucket"] = "all"
@@ -350,12 +361,11 @@ def compute_markout_by_spread(exec_path=None, df=None, horizons=None,
         return np.unique(edges)
 
     if df is not None:
+        if "spread" not in df.columns:
+            return empty_result
         edges = _compute_edges(df["spread"])
         if len(edges) < 2:
-            return pd.DataFrame(columns=[
-                "group", "column", "mean", "se", "ci_lower", "ci_upper",
-                "n", "spread_bucket", "isInt", "horizon_sec",
-            ])
+            return empty_result
         acc.add_chunk(_bucket_chunk(df, edges))
     else:
         # two-pass: first compute global spread edges, then accumulate
@@ -367,17 +377,11 @@ def compute_markout_by_spread(exec_path=None, df=None, horizons=None,
                     n=min(100_000, len(spread_vals)), random_state=42
                 ))
         if not spread_sample:
-            return pd.DataFrame(columns=[
-                "group", "column", "mean", "se", "ci_lower", "ci_upper",
-                "n", "spread_bucket", "isInt", "horizon_sec",
-            ])
+            return empty_result
         spread_all = pd.concat(spread_sample)
         edges = _compute_edges(spread_all)
         if len(edges) < 2:
-            return pd.DataFrame(columns=[
-                "group", "column", "mean", "se", "ci_lower", "ci_upper",
-                "n", "spread_bucket", "isInt", "horizon_sec",
-            ])
+            return empty_result
 
         for chunk in iter_execution_chunks(exec_path):
             acc.add_chunk(_bucket_chunk(chunk, edges))

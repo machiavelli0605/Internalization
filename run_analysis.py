@@ -63,11 +63,12 @@ def _print_psm_summary(psm_results):
     if ipw is not None and not ipw.empty:
         print("\n  IPW-Weighted Outcome Means:")
         pivot = ipw.pivot(index="outcome", columns="group", values="weighted_mean")
-        for outcome in pivot.index:
-            t_val = pivot.loc[outcome, "treated"]
-            c_val = pivot.loc[outcome, "control"]
-            print(f"    {outcome:25s}  treated={t_val:+8.3f}  "
-                  f"control={c_val:+8.3f}  diff={t_val - c_val:+8.3f}")
+        if "treated" in pivot.columns and "control" in pivot.columns:
+            for outcome in pivot.index:
+                t_val = pivot.loc[outcome, "treated"]
+                c_val = pivot.loc[outcome, "control"]
+                print(f"    {outcome:25s}  treated={t_val:+8.3f}  "
+                      f"control={c_val:+8.3f}  diff={t_val - c_val:+8.3f}")
 
 
 def _print_dose_response_summary(dr_results):

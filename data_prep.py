@@ -39,6 +39,10 @@ def derive_parent_columns(df):
     """
     df = df.copy()
 
+    # -- Normalize isInt to boolean ----------------------------------------
+    if "isInt" in df.columns:
+        df["isInt"] = df["isInt"].astype(bool)
+
     # -- Venue percentages ------------------------------------------------
     safe_filled = df["FilledQty"].replace(0, np.nan)
     for col in ["CRBQty", "ATSPINQty", "DarkQty", "LitQty",
@@ -116,6 +120,10 @@ def load_execution_data(path=None, columns=None):
 def derive_execution_columns(df):
     """Derive analysis columns on execution DataFrame."""
     df = df.copy()
+
+    # Normalize isInt to boolean
+    if "isInt" in df.columns:
+        df["isInt"] = df["isInt"].astype(bool)
 
     # Absolute markouts
     rev_cols = [c for c in df.columns if c.startswith("rev") and c.endswith("s_bps")]

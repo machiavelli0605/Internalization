@@ -562,5 +562,246 @@ class TestDerivations:
         np.testing.assert_allclose(perm_impact, approx_perm, atol=0.5)
 
 
+# ===================================================================
+# Bug 7: OUTCOME_VARS not filtered to present columns in descriptive
+# ===================================================================
+
+class TestBug7_MissingOutcomeColumns:
+    """descriptive_summary should not crash when some outcome columns are missing."""
+
+    def test_missing_perm_impact_column(self):
+        from parent_analysis import descriptive_summary
+
+        rng = np.random.RandomState(0)
+        n = 100
+        df = pd.DataFrame({
+            "isInt": [True] * 60 + [False] * 40,
+            "hasCRB": [True] * 40 + [False] * 60,
+            "CRBPct": np.concatenate([rng.uniform(0, 0.5, 40), np.zeros(60)]),
+            "tempImpactBps": rng.normal(0, 5, n),
+            "ArrivalSlippageBps": rng.normal(0, 3, n),
+            # deliberately missing: permImpact5mBps, permImpact15mBps, permImpact60mBps
+            "CRBPctBucket": pd.Categorical(
+                rng.choice(CRB_BUCKET_LABELS, n),
+                categories=CRB_BUCKET_LABELS, ordered=True,
+            ),
+            "qtyOverADV": rng.uniform(0.01, 0.1, n),
+            "PcpRate": rng.uniform(0.05, 0.2, n),
+            "IvlSpreadBps": rng.uniform(2, 15, n),
+            "dailyvol": rng.uniform(0.01, 0.04, n),
+            "ivlSpdVsAvgSpd": rng.uniform(0.5, 2, n),
+            "log_notional": rng.uniform(10, 15, n),
+            "log_adv": rng.uniform(12, 17, n),
+            "duration_mins": rng.uniform(5, 60, n),
+            "ATSPINPct": rng.uniform(0, 0.1, n),
+        })
+
+        # Should not crash with KeyError
+        results = descriptive_summary(df)
+        assert "outcome_by_bucket" in results
+
+
+# ===================================================================
+# Bug 8: Empty accumulator result causes KeyError
+# ===================================================================
+
+class TestBug8_EmptyAccumulatorResult:
+    """Compute functions should handle empty accumulator results."""
+
+    def test_empty_signed_markout(self):
+        from execution_analysis import compute_signed_markout_curves
+
+        # DataFrame with no isInt column — accumulator gets no data
+        df = pd.DataFrame({
+            "rev1s_bps": [1.0, 2.0],
+            "rev5s_bps": [3.0, 4.0],
+        })
+        # isInt column missing, so groupby will fail;
+        # but the MarkoutAccumulator guards against missing group_col
+        result = compute_signed_markout_curves(df=df)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_empty_abs_markout(self):
+        from execution_analysis import compute_abs_markout_curves
+
+        df = pd.DataFrame({
+            "abs_rev1s_bps": [1.0],
+            "abs_rev5s_bps": [3.0],
+        })
+        result = compute_abs_markout_curves(df=df)
+        assert isinstance(result, pd.DataFrame)
+
+
+# ===================================================================
+# Bug 9: Plot guards for empty data
+# ===================================================================
+
+class TestBug9_EmptyPlotGuards:
+    """Plot functions should not crash on empty or missing data."""
+
+    def test_covariate_balance_empty_smd(self):
+        """plot_covariate_balance should return silently for empty DataFrame."""
+        from plots import plot_covariate_balance
+        # Empty DataFrame with no columns (as returned by degenerate PSM)
+        plot_covariate_balance(pd.DataFrame())
+        plt.close("all")
+
+    def test_covariate_balance_none_smd(self):
+        from plots import plot_covariate_balance
+        plot_covariate_balance(None)
+        plt.close("all")
+
+    def test_signed_markout_empty(self):
+        from plots import plot_signed_markout_curves
+        plot_signed_markout_curves(pd.DataFrame())
+        plt.close("all")
+
+    def test_abs_markout_empty(self):
+        from plots import plot_abs_markout_curves
+        plot_abs_markout_curves(pd.DataFrame())
+        plt.close("all")
+
+    def test_inttype_markout_empty(self):
+        from plots import plot_markout_by_inttype
+        plot_markout_by_inttype(pd.DataFrame())
+        plt.close("all")
+
+    def test_markout_distribution_no_horizons(self):
+        """E6 should handle exec_df with no rev*s_bps columns."""
+        from plots import plot_markout_distribution
+        df = pd.DataFrame({"isInt": [True, False], "other": [1.0, 2.0]})
+        plot_markout_distribution(df)
+        plt.close("all")
+
+    def test_p7_no_outcome_columns(self):
+        """P7 should handle missing outcome columns gracefully."""
+        from plots import plot_impact_by_bucket
+        df = pd.DataFrame({
+            "CRBPctBucket": pd.Categorical(["0%", "0%"],
+                                            categories=CRB_BUCKET_LABELS, ordered=True),
+            "otherCol": [1.0, 2.0],
+        })
+        plot_impact_by_bucket(df)
+        plt.close("all")
+
+    def test_e4_format_string_no_signed(self):
+        """E4 title should not crash when signed data is empty."""
+        from plots import plot_within_order_markouts
+        # Only absolute data, no signed
+        within = {
+            "paired_diff": pd.DataFrame([{
+                "column": "abs_rev5s_bps",
+                "horizon_sec": 5,
+                "is_absolute": True,
+                "mean_diff": 0.5,
+                "ci_lower": 0.1,
+                "ci_upper": 0.9,
+                "n_orders": 100,
+            }]),
+        }
+        plot_within_order_markouts(within)
+        plt.close("all")
+
+
+# ===================================================================
+# Bug 16: isInt type normalization (int/string → bool)
+# ===================================================================
+
+class TestBug16_IsIntTypeNormalization:
+    """isInt should be normalized to bool regardless of input type."""
+
+    def test_parent_isint_as_int(self):
+        """isInt stored as 0/1 integers should be converted to bool."""
+        rng = np.random.RandomState(0)
+        n = 50
+        side = rng.choice([1, -1], n)
+        amid = rng.uniform(40, 60, n)
+        emid = amid * (1 + side * rng.uniform(-0.005, 0.005, n))
+
+        df = pd.DataFrame({
+            "AlgoOrderId": np.arange(n),
+            "RIC": "A.O",
+            "Side": side,
+            "EffectiveStartTime": pd.Timestamp("2024-01-02 09:30:00"),
+            "EffectiveEndTime": pd.Timestamp("2024-01-02 10:30:00"),
+            "Notional": rng.uniform(1e4, 1e6, n),
+            "qtyOverADV": rng.uniform(0.01, 0.1, n),
+            "amid": amid,
+            "emid": emid,
+            "rev5m_bps": rng.normal(2, 5, n),
+            "Strategy": "VWAP",
+            "PcpRate": 0.1,
+            "CRBQty": rng.choice([0, 100], n).astype(float),
+            "ATSPINQty": np.zeros(n),
+            "DarkQty": np.zeros(n),
+            "LitQty": np.full(n, 300.0),
+            "InvertedQty": np.zeros(n),
+            "ConditionalQty": np.zeros(n),
+            "FilledQty": np.full(n, 1000.0),
+            "adv": rng.uniform(1e5, 1e7, n),
+            "isInt": np.array([1] * 30 + [0] * 20),  # int, not bool
+        })
+        result = derive_parent_columns(df)
+        assert result["isInt"].dtype == bool
+        assert result["isInt"].sum() == 30
+
+    def test_exec_isint_as_int(self):
+        """isInt stored as 0/1 integers should be converted to bool in executions."""
+        df = pd.DataFrame({
+            "AlgoOrderId": [1, 2],
+            "isInt": [1, 0],  # int, not bool
+            "rev1s_bps": [1.0, 2.0],
+        })
+        result = derive_execution_columns(df)
+        assert result["isInt"].dtype == bool
+        assert result["isInt"].iloc[0] is np.bool_(True)
+        assert result["isInt"].iloc[1] is np.bool_(False)
+
+
+# ===================================================================
+# Bug 17: IPW pivot missing group column
+# ===================================================================
+
+class TestBug17_IPWPivotMissingGroup:
+    """_print_psm_summary should not crash when one group is missing from IPW pivot."""
+
+    def test_ipw_single_group(self):
+        """Only 'treated' group in IPW results — should not KeyError."""
+        from run_analysis import _print_psm_summary
+
+        ipw_df = pd.DataFrame({
+            "outcome": ["tempImpactBps", "ArrivalSlippageBps"],
+            "group": ["treated", "treated"],
+            "weighted_mean": [1.5, 2.3],
+        })
+        psm_results = {
+            "nn_outcomes": pd.DataFrame(),
+            "ipw_outcomes": ipw_df,
+        }
+        # Should not crash
+        _print_psm_summary(psm_results)
+
+
+# ===================================================================
+# Bug 18: compute_markout_by_spread missing spread column
+# ===================================================================
+
+class TestBug18_SpreadColumnMissing:
+    """compute_markout_by_spread should handle missing spread column."""
+
+    def test_no_spread_column(self):
+        from execution_analysis import compute_markout_by_spread
+
+        df = pd.DataFrame({
+            "isInt": [True, False, True],
+            "rev1s_bps": [1.0, 2.0, 3.0],
+            "rev5s_bps": [2.0, 3.0, 4.0],
+            # no "spread" column
+        })
+        result = compute_markout_by_spread(df=df)
+        assert isinstance(result, pd.DataFrame)
+        assert result.empty
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
