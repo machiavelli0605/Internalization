@@ -11,9 +11,9 @@ import matplotlib
 matplotlib.use("Agg")  # non-interactive backend for CI
 import matplotlib.pyplot as plt
 
-from config import OUTCOME_VARS, PSM_COVARIATES, CRB_BUCKET_LABELS
+from config import OUTCOME_VARS, PSM_COVARIATES, CRB_BUCKET_LABELS, get_no_auction_path
 from utils import bootstrap_mean_ci
-from data_prep import derive_parent_columns, derive_execution_columns
+from data_prep import derive_parent_columns, derive_execution_columns, _filter_auctions
 
 
 # ===================================================================
@@ -801,6 +801,200 @@ class TestBug18_SpreadColumnMissing:
         result = compute_markout_by_spread(df=df)
         assert isinstance(result, pd.DataFrame)
         assert result.empty
+
+
+# ===================================================================
+# Auction exclusion tests
+# ===================================================================
+
+class TestGetNoAuctionPath:
+    """Verify path derivation for no-auction variant."""
+
+    def test_standard_path(self):
+        from pathlib import Path
+        result = get_no_auction_path("data/parent_orders.parquet")
+        assert result == Path("data/parent_orders_no_auction.parquet")
+
+    def test_nested_path(self):
+        from pathlib import Path
+        result = get_no_auction_path("foo/bar.parquet")
+        assert result == Path("foo/bar_no_auction.parquet")
+
+    def test_path_object(self):
+        from pathlib import Path
+        result = get_no_auction_path(Path("data/executions.parquet"))
+        assert result == Path("data/executions_no_auction.parquet")
+
+    def test_preserves_extension(self):
+        result = get_no_auction_path("file.parquet")
+        assert str(result).endswith("_no_auction.parquet")
+
+
+class TestFilterAuctions:
+    """Verify _filter_auctions removes auction fills correctly."""
+
+    def test_filters_auction_rows(self):
+        df = pd.DataFrame({
+            "isAuction": [True, False, True, False, False],
+            "rev1s_bps": [1.0, 2.0, 3.0, 4.0, 5.0],
+        })
+        result = _filter_auctions(df)
+        assert len(result) == 3
+        assert result["isAuction"].sum() == 0
+
+    def test_no_isauction_column(self):
+        df = pd.DataFrame({
+            "rev1s_bps": [1.0, 2.0, 3.0],
+        })
+        result = _filter_auctions(df)
+        assert len(result) == 3
+
+    def test_all_auction(self):
+        df = pd.DataFrame({
+            "isAuction": [True, True, True],
+            "rev1s_bps": [1.0, 2.0, 3.0],
+        })
+        result = _filter_auctions(df)
+        assert len(result) == 0
+
+    def test_no_auction(self):
+        df = pd.DataFrame({
+            "isAuction": [False, False],
+            "rev1s_bps": [1.0, 2.0],
+        })
+        result = _filter_auctions(df)
+        assert len(result) == 2
+
+
+class TestExecutionAuctionFiltering:
+    """Verify derive_execution_columns + filter correctly removes auctions."""
+
+    def test_derive_then_filter(self):
+        df = pd.DataFrame({
+            "AlgoOrderId": [1, 1, 2, 2],
+            "isInt": [True, False, True, False],
+            "LastLiquidity": ["ADDED", "CLOSE_AUCTION", "REMOVED", "OPENING_AUCTION"],
+            "rev1s_bps": [1.0, 2.0, 3.0, 4.0],
+            "rev5s_bps": [1.0, 2.0, 3.0, 4.0],
+        })
+        derived = derive_execution_columns(df)
+        assert "isAuction" in derived.columns
+        assert derived["isAuction"].sum() == 2
+
+        filtered = _filter_auctions(derived)
+        assert len(filtered) == 2
+        assert filtered["isAuction"].sum() == 0
+
+
+class TestComputeWithExcludeAuctions:
+    """Verify compute functions respect exclude_auctions flag."""
+
+    def _make_exec_df(self):
+        rng = np.random.RandomState(0)
+        n = 200
+        df = pd.DataFrame({
+            "AlgoOrderId": rng.choice(range(50), n),
+            "isInt": rng.choice([True, False], n),
+            "LastLiquidity": rng.choice(
+                ["ADDED", "REMOVED", "CLOSE_AUCTION"], n,
+                p=[0.4, 0.4, 0.2]
+            ),
+            "spread": rng.uniform(1, 20, n),
+            "rev1s_bps": rng.normal(0, 2, n),
+            "rev5s_bps": rng.normal(0, 3, n),
+            "rev10s_bps": rng.normal(0, 3, n),
+            "rev30s_bps": rng.normal(0, 4, n),
+            "rev60s_bps": rng.normal(0, 5, n),
+            "rev120s_bps": rng.normal(0, 5, n),
+            "rev300s_bps": rng.normal(0, 6, n),
+            "intType": rng.choice(["mid", "far", None], n),
+        })
+        return derive_execution_columns(df)
+
+    def test_signed_markout_exclude(self):
+        from execution_analysis import compute_signed_markout_curves
+
+        df = self._make_exec_df()
+        n_auction = df["isAuction"].sum()
+        assert n_auction > 0  # confirm we have auctions to filter
+
+        result = compute_signed_markout_curves(df=df, exclude_auctions=True)
+        # Result should be based on fewer fills
+        result_all = compute_signed_markout_curves(df=df, exclude_auctions=False)
+
+        if not result.empty and not result_all.empty:
+            n_excl = result["n"].sum()
+            n_all = result_all["n"].sum()
+            assert n_excl < n_all
+
+    def test_abs_markout_exclude(self):
+        from execution_analysis import compute_abs_markout_curves
+
+        df = self._make_exec_df()
+        result = compute_abs_markout_curves(df=df, exclude_auctions=True)
+        result_all = compute_abs_markout_curves(df=df, exclude_auctions=False)
+
+        if not result.empty and not result_all.empty:
+            assert result["n"].sum() < result_all["n"].sum()
+
+    def test_markout_by_inttype_exclude(self):
+        from execution_analysis import compute_markout_by_inttype
+
+        df = self._make_exec_df()
+        result = compute_markout_by_inttype(df=df, exclude_auctions=True)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_markout_by_spread_exclude(self):
+        from execution_analysis import compute_markout_by_spread
+
+        df = self._make_exec_df()
+        result = compute_markout_by_spread(df=df, exclude_auctions=True)
+        assert isinstance(result, pd.DataFrame)
+
+
+class TestParentPathResolution:
+    """Verify load_parent_data with exclude_auctions resolves to correct path."""
+
+    def test_resolves_no_auction_path(self, tmp_path):
+        from data_prep import load_parent_data
+
+        # Create a minimal parent parquet at the no-auction path
+        rng = np.random.RandomState(0)
+        n = 10
+        side = rng.choice([1, -1], n)
+        amid = rng.uniform(40, 60, n)
+        df = pd.DataFrame({
+            "AlgoOrderId": np.arange(n),
+            "RIC": "A.O",
+            "Side": side,
+            "EffectiveStartTime": pd.Timestamp("2024-01-02 09:30:00"),
+            "EffectiveEndTime": pd.Timestamp("2024-01-02 10:30:00"),
+            "Notional": rng.uniform(1e4, 1e6, n),
+            "qtyOverADV": rng.uniform(0.01, 0.1, n),
+            "amid": amid,
+            "emid": amid * (1 + side * rng.uniform(-0.005, 0.005, n)),
+            "rev5m_bps": rng.normal(2, 5, n),
+            "Strategy": "VWAP",
+            "PcpRate": 0.1,
+            "CRBQty": np.zeros(n),
+            "ATSPINQty": np.zeros(n),
+            "DarkQty": np.zeros(n),
+            "LitQty": np.full(n, 300.0),
+            "InvertedQty": np.zeros(n),
+            "ConditionalQty": np.zeros(n),
+            "FilledQty": np.full(n, 1000.0),
+            "adv": rng.uniform(1e5, 1e7, n),
+            "isInt": [True] * 5 + [False] * 5,
+        })
+
+        # Write to no-auction variant path
+        base_path = tmp_path / "parent_orders.parquet"
+        no_auction_path = tmp_path / "parent_orders_no_auction.parquet"
+        df.to_parquet(no_auction_path)
+
+        # load_parent_data with exclude_auctions should use no_auction_path
+        result = load_parent_data(str(base_path), exclude_auctions=True)
+        assert len(result) == n
 
 
 if __name__ == "__main__":

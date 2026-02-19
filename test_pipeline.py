@@ -22,7 +22,9 @@ from execution_analysis import (
     compute_abs_markout_by_inttype,
     compute_within_order_markouts,
     compute_markout_by_spread,
+    run_full_execution_analysis,
 )
+from data_prep import _filter_auctions
 from plots import generate_parent_plots, generate_execution_plots
 
 
@@ -183,6 +185,7 @@ def make_synthetic_executions(parent_df, fills_per_order=10, seed=42):
                 "rev10s_bps": base_markout * 0.8 + rng.normal(0, 1.5),
                 "rev30s_bps": base_markout * 0.6 + rng.normal(0, 2),
                 "rev60s_bps": base_markout * 0.4 + rng.normal(0, 2.5),
+                "rev120s_bps": base_markout * 0.3 + rng.normal(0, 2.8),
                 "rev300s_bps": base_markout * 0.2 + rng.normal(0, 3),
                 "intType": int_type,
                 "isInt": is_int,
@@ -235,6 +238,25 @@ def main():
 
     print("  [6/6] Markout by spread bucket ...")
     exec_results["markout_by_spread"] = compute_markout_by_spread(df=exec_df)
+
+    # --- Auction exclusion test ---
+    print("\n3b. Testing auction exclusion path ...")
+    n_before = len(exec_df)
+    n_auction = exec_df["isAuction"].sum() if "isAuction" in exec_df.columns else 0
+    exec_no_auction = _filter_auctions(exec_df)
+    n_after = len(exec_no_auction)
+    print(f"   Executions before: {n_before:,}  auction: {n_auction:,}  "
+          f"after filtering: {n_after:,}")
+    assert n_after <= n_before
+    if "isAuction" in exec_no_auction.columns:
+        assert exec_no_auction["isAuction"].sum() == 0
+
+    # Run execution analysis with exclude_auctions on pre-loaded df
+    exec_results_no_auction = run_full_execution_analysis(
+        parent_df, exec_df=exec_df, exclude_auctions=True
+    )
+    assert "signed_markouts" in exec_results_no_auction
+    print("   Auction exclusion path: OK")
 
     # --- Generate plots ---
     print("\n4. Generating plots ...")
