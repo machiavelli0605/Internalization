@@ -96,6 +96,15 @@ REGRESSION_SAMPLE_SIZE = None
 # ---------------------------------------------------------------------------
 PLOT_DPI = 150
 PLOT_FORMAT = "png"
+
+# ---------------------------------------------------------------------------
+# Auction exclusion helpers
+# ---------------------------------------------------------------------------
+
+def get_no_auction_path(path):
+    """Derive the no-auction variant of a parquet file path."""
+    p = Path(path)
+    return p.with_name(p.stem + "_no_auction" + p.suffix)
 COLOR_CRB = "#1f77b4"       # blue
 COLOR_NON_CRB = "#ff7f0e"   # orange
 COLOR_TREATED = "#2ca02c"    # green

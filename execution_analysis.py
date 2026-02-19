@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from config import MARKOUT_HORIZONS_SEC, EXEC_CHUNK_SIZE
-from data_prep import iter_execution_chunks, load_executions_for_orders
+from data_prep import iter_execution_chunks, load_executions_for_orders, _filter_auctions
 from utils import bootstrap_mean_ci
 
 
@@ -105,7 +105,8 @@ class MarkoutAccumulator:
 # A.  Signed markout curves
 # ===================================================================
 
-def compute_signed_markout_curves(exec_path=None, df=None, horizons=None):
+def compute_signed_markout_curves(exec_path=None, df=None, horizons=None,
+                                  exclude_auctions=False):
     """Compute mean signed markouts (rev{x}s_bps) by isInt group.
 
     Parameters
@@ -113,6 +114,7 @@ def compute_signed_markout_curves(exec_path=None, df=None, horizons=None):
     exec_path : path – parquet file (chunked reading)
     df : DataFrame – if provided, use directly instead of chunked reading
     horizons : list[int] – markout horizons in seconds
+    exclude_auctions : bool – if True, exclude auction fills
 
     Returns
     -------
@@ -122,9 +124,12 @@ def compute_signed_markout_curves(exec_path=None, df=None, horizons=None):
     acc = MarkoutAccumulator("isInt", cols)
 
     if df is not None:
+        if exclude_auctions:
+            df = _filter_auctions(df)
         acc.add_chunk(df)
     else:
-        for chunk in iter_execution_chunks(exec_path):
+        for chunk in iter_execution_chunks(exec_path,
+                                           exclude_auctions=exclude_auctions):
             acc.add_chunk(chunk)
 
     result = acc.result()
@@ -137,15 +142,19 @@ def compute_signed_markout_curves(exec_path=None, df=None, horizons=None):
 # B.  Absolute markout curves
 # ===================================================================
 
-def compute_abs_markout_curves(exec_path=None, df=None, horizons=None):
+def compute_abs_markout_curves(exec_path=None, df=None, horizons=None,
+                               exclude_auctions=False):
     """Compute mean |rev{x}s_bps| by isInt group."""
     cols = _abs_rev_cols(horizons=horizons)
     acc = MarkoutAccumulator("isInt", cols)
 
     if df is not None:
+        if exclude_auctions:
+            df = _filter_auctions(df)
         acc.add_chunk(df)
     else:
-        for chunk in iter_execution_chunks(exec_path):
+        for chunk in iter_execution_chunks(exec_path,
+                                           exclude_auctions=exclude_auctions):
             acc.add_chunk(chunk)
 
     result = acc.result()
@@ -158,7 +167,8 @@ def compute_abs_markout_curves(exec_path=None, df=None, horizons=None):
 # C.  Markout by intType
 # ===================================================================
 
-def compute_markout_by_inttype(exec_path=None, df=None, horizons=None):
+def compute_markout_by_inttype(exec_path=None, df=None, horizons=None,
+                               exclude_auctions=False):
     """Compute mean signed markouts grouped by intType.
 
     Non-CRB fills are labelled "non-CRB" in the intType column.
@@ -178,9 +188,12 @@ def compute_markout_by_inttype(exec_path=None, df=None, horizons=None):
         return chunk
 
     if df is not None:
+        if exclude_auctions:
+            df = _filter_auctions(df)
         acc.add_chunk(_label_chunk(df))
     else:
-        for chunk in iter_execution_chunks(exec_path):
+        for chunk in iter_execution_chunks(exec_path,
+                                           exclude_auctions=exclude_auctions):
             acc.add_chunk(_label_chunk(chunk))
 
     result = acc.result()
@@ -189,7 +202,8 @@ def compute_markout_by_inttype(exec_path=None, df=None, horizons=None):
     return result
 
 
-def compute_abs_markout_by_inttype(exec_path=None, df=None, horizons=None):
+def compute_abs_markout_by_inttype(exec_path=None, df=None, horizons=None,
+                                   exclude_auctions=False):
     """Compute mean |rev{x}s_bps| grouped by intType."""
     cols = _abs_rev_cols(horizons=horizons)
     acc = MarkoutAccumulator("_inttype_label", cols)
@@ -205,9 +219,12 @@ def compute_abs_markout_by_inttype(exec_path=None, df=None, horizons=None):
         return chunk
 
     if df is not None:
+        if exclude_auctions:
+            df = _filter_auctions(df)
         acc.add_chunk(_label_chunk(df))
     else:
-        for chunk in iter_execution_chunks(exec_path):
+        for chunk in iter_execution_chunks(exec_path,
+                                           exclude_auctions=exclude_auctions):
             acc.add_chunk(_label_chunk(chunk))
 
     result = acc.result()
@@ -222,7 +239,7 @@ def compute_abs_markout_by_inttype(exec_path=None, df=None, horizons=None):
 
 def compute_within_order_markouts(parent_df, exec_path=None, exec_df=None,
                                   horizons=None, sample_orders=200_000,
-                                  seed=42):
+                                  seed=42, exclude_auctions=False):
     """Compare CRB vs non-CRB fill markouts within the same parent order.
 
     Strategy:
@@ -238,6 +255,7 @@ def compute_within_order_markouts(parent_df, exec_path=None, exec_df=None,
     horizons : list[int]
     sample_orders : int – max parent orders to use (for memory)
     seed : int
+    exclude_auctions : bool – if True, exclude auction fills
 
     Returns
     -------
@@ -262,8 +280,11 @@ def compute_within_order_markouts(parent_df, exec_path=None, exec_df=None,
     # Step 2: load executions for these orders
     if exec_df is not None:
         execs = exec_df[exec_df["AlgoOrderId"].isin(order_set)].copy()
+        if exclude_auctions:
+            execs = _filter_auctions(execs)
     else:
-        execs = load_executions_for_orders(order_set, exec_path)
+        execs = load_executions_for_orders(order_set, exec_path,
+                                           exclude_auctions=exclude_auctions)
 
     if execs.empty:
         return {"paired_diff": pd.DataFrame(), "within_order_stats": pd.DataFrame()}
@@ -321,7 +342,7 @@ def compute_within_order_markouts(parent_df, exec_path=None, exec_df=None,
 # ===================================================================
 
 def compute_markout_by_spread(exec_path=None, df=None, horizons=None,
-                              n_buckets=5):
+                              n_buckets=5, exclude_auctions=False):
     """Compute markout curves sliced by spread quintile.
 
     Returns
@@ -361,6 +382,8 @@ def compute_markout_by_spread(exec_path=None, df=None, horizons=None,
         return np.unique(edges)
 
     if df is not None:
+        if exclude_auctions:
+            df = _filter_auctions(df)
         if "spread" not in df.columns:
             return empty_result
         edges = _compute_edges(df["spread"])
@@ -370,7 +393,8 @@ def compute_markout_by_spread(exec_path=None, df=None, horizons=None,
     else:
         # two-pass: first compute global spread edges, then accumulate
         spread_sample = []
-        for chunk in iter_execution_chunks(exec_path):
+        for chunk in iter_execution_chunks(exec_path,
+                                           exclude_auctions=exclude_auctions):
             spread_vals = chunk["spread"].dropna()
             if len(spread_vals) > 0:
                 spread_sample.append(spread_vals.sample(
@@ -383,7 +407,8 @@ def compute_markout_by_spread(exec_path=None, df=None, horizons=None,
         if len(edges) < 2:
             return empty_result
 
-        for chunk in iter_execution_chunks(exec_path):
+        for chunk in iter_execution_chunks(exec_path,
+                                           exclude_auctions=exclude_auctions):
             acc.add_chunk(_bucket_chunk(chunk, edges))
 
     result = acc.result()
@@ -400,7 +425,8 @@ def compute_markout_by_spread(exec_path=None, df=None, horizons=None,
 # Convenience: run everything
 # ===================================================================
 
-def run_full_execution_analysis(parent_df, exec_path=None, exec_df=None):
+def run_full_execution_analysis(parent_df, exec_path=None, exec_df=None,
+                                exclude_auctions=False):
     """Run all execution-level analyses.
 
     Pass either exec_path (for chunked reading) or exec_df (pre-loaded).
@@ -410,6 +436,7 @@ def run_full_execution_analysis(parent_df, exec_path=None, exec_df=None):
     dict of analysis results
     """
     kw = {"exec_path": exec_path} if exec_df is None else {"df": exec_df}
+    kw["exclude_auctions"] = exclude_auctions
 
     print("  [1/6] Signed markout curves ...")
     signed = compute_signed_markout_curves(**kw)
@@ -425,7 +452,8 @@ def run_full_execution_analysis(parent_df, exec_path=None, exec_df=None):
 
     print("  [5/6] Within-order markout comparison ...")
     within = compute_within_order_markouts(parent_df, exec_path=exec_path,
-                                           exec_df=exec_df)
+                                           exec_df=exec_df,
+                                           exclude_auctions=exclude_auctions)
 
     print("  [6/6] Markout by spread bucket ...")
     by_spread = compute_markout_by_spread(**kw)

@@ -16,16 +16,30 @@ from config import (
     CRB_BUCKET_LABELS,
     REVERSION_HORIZONS_MIN,
     EXEC_CHUNK_SIZE,
+    get_no_auction_path,
 )
+
+
+# ===================================================================
+# Auction filtering helper
+# ===================================================================
+
+def _filter_auctions(df):
+    """Remove auction fills from execution DataFrame."""
+    if "isAuction" in df.columns:
+        return df[~df["isAuction"]].copy()
+    return df
 
 
 # ===================================================================
 # Parent order data
 # ===================================================================
 
-def load_parent_data(path=None):
+def load_parent_data(path=None, exclude_auctions=False):
     """Load parent order parquet and derive all analysis columns."""
     path = path or PARENT_DATA_PATH
+    if exclude_auctions:
+        path = get_no_auction_path(path)
     df = pd.read_parquet(path)
     df = derive_parent_columns(df)
     return df
@@ -109,11 +123,13 @@ def derive_parent_columns(df):
 # Execution data
 # ===================================================================
 
-def load_execution_data(path=None, columns=None):
+def load_execution_data(path=None, columns=None, exclude_auctions=False):
     """Load execution parquet (full load — use only if it fits in memory)."""
     path = path or EXECUTION_DATA_PATH
     df = pd.read_parquet(path, columns=columns)
     df = derive_execution_columns(df)
+    if exclude_auctions:
+        df = _filter_auctions(df)
     return df
 
 
@@ -140,7 +156,8 @@ def derive_execution_columns(df):
     return df
 
 
-def iter_execution_chunks(path=None, chunksize=None, columns=None):
+def iter_execution_chunks(path=None, chunksize=None, columns=None,
+                          exclude_auctions=False):
     """Yield execution data in chunks using pyarrow row groups.
 
     If the parquet file has row groups smaller than *chunksize*, each
@@ -170,12 +187,18 @@ def iter_execution_chunks(path=None, chunksize=None, columns=None):
             combined = pd.concat(buffer, ignore_index=True)
             buffer = []
             buffer_len = 0
-            yield derive_execution_columns(combined)
+            derived = derive_execution_columns(combined)
+            if exclude_auctions:
+                derived = _filter_auctions(derived)
+            yield derived
 
     # flush remaining
     if buffer:
         combined = pd.concat(buffer, ignore_index=True)
-        yield derive_execution_columns(combined)
+        derived = derive_execution_columns(combined)
+        if exclude_auctions:
+            derived = _filter_auctions(derived)
+        yield derived
 
 
 # ===================================================================
@@ -189,7 +212,8 @@ def sample_parent_orders(df, n=500_000, seed=42):
     return df.sample(n=n, random_state=seed)
 
 
-def load_executions_for_orders(order_ids, path=None, columns=None):
+def load_executions_for_orders(order_ids, path=None, columns=None,
+                               exclude_auctions=False):
     """Load executions for a specific set of AlgoOrderIds.
 
     Uses predicate pushdown where possible (parquet filters).
@@ -201,7 +225,13 @@ def load_executions_for_orders(order_ids, path=None, columns=None):
     except Exception:
         # fallback: scan and filter
         df = pd.DataFrame()
-        for chunk in iter_execution_chunks(path, columns=columns):
+        for chunk in iter_execution_chunks(path, columns=columns,
+                                           exclude_auctions=exclude_auctions):
             matched = chunk[chunk["AlgoOrderId"].isin(order_ids)]
             df = pd.concat([df, matched], ignore_index=True)
-    return derive_execution_columns(df)
+        # derive_execution_columns already applied by iter_execution_chunks
+        return df
+    df = derive_execution_columns(df)
+    if exclude_auctions:
+        df = _filter_auctions(df)
+    return df

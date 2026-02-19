@@ -123,9 +123,14 @@ def main():
                         help="Column for clustered standard errors")
     parser.add_argument("--exec-sample", type=int, default=5_000_000,
                         help="Sample size for execution-level KDE plots")
+    parser.add_argument("--exclude-auctions", action="store_true",
+                        help="Exclude auction fills from analysis")
     args = parser.parse_args()
 
     t0 = time.time()
+
+    if args.exclude_auctions:
+        print("MODE: Excluding auction fills from analysis")
 
     # -----------------------------------------------------------------
     # Parent-level analysis
@@ -136,7 +141,8 @@ def main():
         print("=" * 60)
 
         print(f"\nLoading parent data from {args.parent_data} ...")
-        parent_df = load_parent_data(args.parent_data)
+        parent_df = load_parent_data(args.parent_data,
+                                     exclude_auctions=args.exclude_auctions)
         print(f"  Loaded {len(parent_df):,} parent orders.")
         print(f"  isInt=True: {parent_df['isInt'].sum():,}  "
               f"({parent_df['isInt'].mean()*100:.1f}%)")
@@ -180,10 +186,12 @@ def main():
         # We need parent_df for within-order analysis
         if args.exec_only:
             print(f"  Loading parent data for within-order analysis ...")
-            parent_df = load_parent_data(args.parent_data)
+            parent_df = load_parent_data(args.parent_data,
+                                         exclude_auctions=args.exclude_auctions)
 
         exec_results = run_full_execution_analysis(
-            parent_df, exec_path=args.exec_data
+            parent_df, exec_path=args.exec_data,
+            exclude_auctions=args.exclude_auctions
         )
 
         # --- Print summaries ---
@@ -196,7 +204,8 @@ def main():
         # For E6 (KDE), we need a sample loaded into memory
         print(f"\n  Loading execution sample (n={args.exec_sample:,}) for KDE plots ...")
         try:
-            exec_sample = load_execution_data(args.exec_data)
+            exec_sample = load_execution_data(args.exec_data,
+                                              exclude_auctions=args.exclude_auctions)
             if len(exec_sample) > args.exec_sample:
                 exec_sample = exec_sample.sample(n=args.exec_sample, random_state=42)
         except (MemoryError, Exception) as e:
@@ -204,7 +213,8 @@ def main():
             from data_prep import iter_execution_chunks
             chunks = []
             total = 0
-            for chunk in iter_execution_chunks(args.exec_data):
+            for chunk in iter_execution_chunks(args.exec_data,
+                                                exclude_auctions=args.exclude_auctions):
                 n_take = min(len(chunk), args.exec_sample - total)
                 if n_take <= 0:
                     break
