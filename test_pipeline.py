@@ -118,6 +118,8 @@ def make_synthetic_parents(n=20_000, seed=42):
         "InvertedQty": np.zeros(n),
         "ConditionalQty": np.zeros(n),
         "VenueTypeUnknownQty": np.zeros(n),
+        "ELPQty": np.zeros(n),
+        "FeeFeeQty": np.zeros(n),
         "FilledQty": filled_qty,
         "StartQty": filled_qty,
         "LimitPx": amid * (1 + side * 0.05),
@@ -297,6 +299,19 @@ def main():
                          & (signed["column"] == "rev5s_bps")]
             if not sub.empty:
                 print(f"    {label}: mean={sub.iloc[0]['mean']:+.3f} bps")
+
+    # Validate dose-response PSM results
+    dr = parent_results.get("dose_response", {})
+    att = dr.get("att_by_bucket")
+    if att is not None and not att.empty:
+        print(f"\n  Dose-response PSM: {len(att)} bucket-outcome ATT estimates")
+        assert "att" in att.columns, "att_by_bucket missing 'att' column"
+        assert "bucket" in att.columns, "att_by_bucket missing 'bucket' column"
+        assert "outcome" in att.columns, "att_by_bucket missing 'outcome' column"
+        assert len(att["bucket"].unique()) > 0, "No dose buckets matched"
+        print("   Dose-response PSM validation: OK")
+    else:
+        print("\n  WARNING: Dose-response PSM produced no results (may need larger synthetic data)")
 
     # Count plots generated
     plot_files = list(PLOT_DIR.glob("*.png"))
