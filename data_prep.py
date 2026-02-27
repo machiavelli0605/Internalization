@@ -81,7 +81,7 @@ def derive_parent_columns(df):
     df["CRBPctBucket"] = pd.Categorical(
         df["CRBPctBucket"], categories=CRB_BUCKET_LABELS, ordered=True
     )
-    df.loc[:, "qtyOverADV"] = np.log10(df.loc[:, "qtyOverADV"] + 1e-10)
+    df.loc[:, "log_qtyOverADV"] = np.log1p(df.loc[:, "qtyOverADV"])
 
     # -- Impact metrics ---------------------------------------------------
     # tempImpactBps = 1e4 * Side * (amid - emid) / amid

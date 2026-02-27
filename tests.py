@@ -120,7 +120,7 @@ class TestBug1_NNMatchedPairAlignment:
 
         df = pd.DataFrame({
             "hasCRB": [True] * (n // 2) + [False] * (n // 2),
-            "qtyOverADV": rng.uniform(0.01, 0.1, n),
+            "log_qtyOverADV": rng.uniform(0.01, 0.1, n),
             "PcpRate": rng.uniform(0.05, 0.2, n),
             "IvlSpreadBps": rng.uniform(2, 15, n),
             "dailyvol": rng.uniform(0.01, 0.04, n),
@@ -585,7 +585,7 @@ class TestBug7_MissingOutcomeColumns:
                 rng.choice(CRB_BUCKET_LABELS, n),
                 categories=CRB_BUCKET_LABELS, ordered=True,
             ),
-            "qtyOverADV": rng.uniform(0.01, 0.1, n),
+            "log_qtyOverADV": rng.uniform(0.01, 0.1, n),
             "PcpRate": rng.uniform(0.05, 0.2, n),
             "IvlSpreadBps": rng.uniform(2, 15, n),
             "dailyvol": rng.uniform(0.01, 0.04, n),

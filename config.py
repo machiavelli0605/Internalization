@@ -27,7 +27,7 @@ CRB_BUCKET_LABELS = ["0%", "(0-5%]", "(5-15%]", "(15-30%]", "(30-50%]", "(50%+]"
 # Regression specification
 # ---------------------------------------------------------------------------
 CONTINUOUS_CONTROLS = [
-    "qtyOverADV",
+    "log_qtyOverADV",
     "PcpRate",
     "log_adv",
     "duration_mins",
@@ -52,7 +52,7 @@ OUTCOME_VARS = [
 N_NEIGHBORS = 10
 EXACT_MATCH_COLS = ["Strategy"]
 PSM_COVARIATES = [
-    "qtyOverADV",
+    "log_qtyOverADV",
     "PcpRate",
     "log_adv",
     "duration_mins",
