@@ -48,7 +48,7 @@ def stratified_sample(
     strata_cols,
     n_total: int,
     random_state: int = 42,
-    treatmetn_col: str | None = None,
+    treatment_col: str | None = None,
     preserve_treatment_share: bool = True,
     min_per_stratum: int = 0,
 ):
@@ -60,7 +60,7 @@ def stratified_sample(
     strata_cols : column(s) defining strata.
     n_total : target total sample size (may be smaller if df is smaller).
     random_state : RNG seed.
-    treatmetn_col : if given *and* preserve_treatment_share is True, the
+    treatment_col : if given *and* preserve_treatment_share is True, the
         treatment/control ratio within each stratum is preserved.
     min_per_stratum : guarantee at least this many rows per stratum (if the
         stratum has enough rows).
@@ -117,9 +117,9 @@ def stratified_sample(
             parts.append(grp)
             continue
 
-        if treatmetn_col and preserve_treatment_share and treatmetn_col in grp.columns:
-            treated = grp[grp[treatmetn_col].astype(bool)]
-            control = grp[~grp[treatmetn_col].astype(bool)]
+        if treatment_col and preserve_treatment_share and treatment_col in grp.columns:
+            treated = grp[grp[treatment_col].astype(bool)]
+            control = grp[~grp[treatment_col].astype(bool)]
             n_t = int(round(len(treated) / len(grp) * n_grp))
             n_t = max(0, min(n_t, len(treated)))
             n_c = min(n_grp - n_t, len(control))
@@ -440,8 +440,8 @@ def run_psm_analysis(
     results["smd_before"] = compute_smd(work, treatment_col, available_covs)
 
     # --- IPW (full data) ------------------------------------------------
-    weights = compute_ipw_weights(np.clip(work["ps"].values, 0.01, 0.99), work[treatment_col].astype(int).values)
-    results["smd_after_ipw"] = compute_weighted_smd(work, treatment_col, ps_covs, weights)
+    weights = compute_ipw_weights(work["ps"].values, work[treatment_col].astype(int).values)
+    results["smd_after_ipw"] = compute_weighted_smd(work, treatment_col, available_covs, weights)
 
     ipw_rows = []
     for outcome in OUTCOME_VARS:
@@ -459,7 +459,7 @@ def run_psm_analysis(
                 {
                     "outcome": outcome,
                     "group": label,
-                    "weighted_mean": np.average(vals[valid], weights=w[valid]),
+                    "weighted_mean": wmean,
                     "n": int(valid.sum()),
                 }
             )
@@ -470,10 +470,10 @@ def run_psm_analysis(
         treated_all = work[work[treatment_col].astype(bool)]
         budget = max_sample - len(treated_all)
         if budget <= 0:
-            work_nn = stratified_sample(treated_all, strata_cols=exact_cols, n_total=max_sample, random_state=42, treatmetn_col=None)
+            work_nn = stratified_sample(treated_all, strata_cols=exact_cols, n_total=max_sample, random_state=42, treatment_col=None)
         else:
             controls = work[~work[treatment_col].astype(bool)]
-            controls_s = stratified_sample(controls, strata_cols=exact_cols, n_total=budget, random_state=42, treatmetn_col=None, preserve_treatment_share=False)
+            controls_s = stratified_sample(controls, strata_cols=exact_cols, n_total=budget, random_state=42, treatment_col=None, preserve_treatment_share=False)
             work_nn = pd.concat([treated_all, controls_s], axis=0)
     else:
         work_nn = work
@@ -515,7 +515,7 @@ def run_psm_analysis(
 
         rows = []
         for i, pid in enumerate(pair_ids):
-            for j in range(k):
+            for j in range(nbr_idx.shape[1]):
                 c_idx = int(nbr_idx[i, j])
                 if c_idx < 0:
                     continue
@@ -562,15 +562,21 @@ def run_psm_analysis(
             }
 
             if not results["strata_counts_before"].empty and not strata_counts_after.empty:
-                before_sizes = results["strata_counts_before"][exact_cols+["size"]].rename(columns={"size": "size_before"})
+                before_sizes = results["strata_counts_before"][exact_cols + ["size", "n_treated"]].rename(
+                    columns={"size": "size_before", "n_treated": "n_treated_before"}
+                )
                 treated_after = matched_t.groupby(exact_cols, dropna=False, observed=True).size().reset_index(name="treated_after")
                 retention = before_sizes.merge(treated_after, on=exact_cols, how="left")
                 retention["treated_after"] = retention["treated_after"].fillna(0).astype(int)
-                retention["matched_retention_pct"] = np.where(retention["size_before"] > 0, 100.0*retention["treated_after"]/retention["size_before"], np.nan)
+                retention["matched_retention_pct"] = np.where(
+                    retention["n_treated_before"] > 0,
+                    100.0 * retention["treated_after"] / retention["n_treated_before"],
+                    np.nan,
+                )
                 results["match_retention_by_stratum"] = retention
             else:
                 results["match_retention_by_stratum"] = pd.DataFrame()
-        results["smd_after_nn"] = compute_weighted_smd(matched_all_long, treatment_col, ps_covs, matched_all_long["match_weight"].values)
+        results["smd_after_nn"] = compute_weighted_smd(matched_all_long, treatment_col, available_covs, matched_all_long["match_weight"].values)
 
         # Outcome comparison — keep pairs aligned (same positional index)
         nn_rows = []
@@ -754,7 +760,7 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
 
             rows = []
             for i, pid in enumerate(pair_ids):
-                for j in range(k):
+                for j in range(nbr_idx.shape[1]):
                     c_idx = int(nbr_idx[i, j])
                     if c_idx < 0:
                         continue
@@ -834,7 +840,7 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
                 "ci_lower": ci_lo,
                 "ci_upper": ci_hi,
                 "n_treated": int(len(merged)),
-                "n_matched_controls": int(len(matched_c_long)),
+                "n_matched_controls": int(merged["k_used"].sum()),
                 "avg_k_used": float(np.nanmean(merged["k_used"].values)),
             })
 
