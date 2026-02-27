@@ -21,7 +21,7 @@ python run_analysis.py --parent-data path/to/parents.parquet --exec-data path/to
 |---|---|
 | `config.py` | Paths, constants, bucket definitions, control variable lists, plot settings |
 | `utils.py` | Regression wrappers, propensity score matching/IPW, SMD, bootstrap CIs |
-| `data_prep.py` | Data loading, column derivation, chunked execution reader (for 550M rows) |
+| `data_prep.py` | Data loading, column derivation, execution data reader |
 | `parent_analysis.py` | Parent-level analyses: descriptive, OLS regression, PSM, dose-response |
 | `execution_analysis.py` | Execution-level analyses: markout curves, within-order comparison |
 | `plots.py` | All 15 visualization functions |
@@ -60,17 +60,20 @@ Note: `--parent-data` is still needed for `--exec-only` because the within-order
 | `--exec-only` | off | Skip parent-level analysis |
 | `--cluster-col` | `RIC` | Column for clustered standard errors in regressions |
 | `--exec-sample` | `5000000` | Sample size for execution KDE plots (E6) |
+| `--exclude-auctions` | off | Exclude auction fills from analysis |
 
 ## Configuration
 
 Edit `config.py` to adjust:
 
 - **`CRB_BUCKET_EDGES`** / **`CRB_BUCKET_LABELS`** — how CRBPct is binned for dose-response
-- **`CONTINUOUS_CONTROLS`** — continuous covariates in regressions
-- **`CATEGORICAL_FE`** / **`ENTITY_FE`** — fixed effects in regressions
+- **`CONTINUOUS_CONTROLS`** — continuous covariates in regressions (`qtyOverADV`, `PcpRate`, `log_adv`, `duration_mins`, `start_mins`)
+- **`CATEGORICAL_FE`** / **`ENTITY_FE`** — fixed effects in regressions (default: `Strategy` only)
 - **`PSM_COVARIATES`** — variables used for propensity score estimation
+- **`N_NEIGHBORS`** — number of neighbors for k-NN matching (default: 10)
+- **`EXACT_MATCH_COLS`** — columns for stratified (exact-match) matching (default: `["Strategy"]`)
 - **`OUTCOME_VARS`** — which outcome metrics to analyze
-- **`EXEC_CHUNK_SIZE`** — rows per chunk when streaming executions (tune for your memory)
+- **`VENUE_QTY_COLS`** — venue quantity columns used for deriving venue percentages
 - **`REGRESSION_SAMPLE_SIZE`** — set to an integer (e.g. `2_000_000`) to subsample for regressions; `None` uses all data
 
 ## Data Requirements
@@ -88,7 +91,7 @@ Expected columns:
 | `EffectiveStartTime` | datetime | Order start time |
 | `EffectiveEndTime` | datetime | Order end time |
 | `Notional` | float | Order notional value |
-| `qtyOverADV` | float | Order qty / average daily volume |
+| `qtyOverADV` | float | Order qty / average daily volume (log-transformed during data prep) |
 | `amid` | float | Arrival mid price |
 | `emid` | float | End mid price |
 | `rev5m_bps`, `rev15m_bps`, `rev60m_bps` | float | Post-trade reversion in bps (positive = price reverted) |
@@ -104,19 +107,18 @@ Expected columns:
 | `InvertedQty` | float | Qty filled in inverted lit venues |
 | `ConditionalQty` | float | Qty filled in conditional venues |
 | `VenueTypeUnknownQty` | float | Qty filled in unknown venues |
+| `ELPQty` | float | Qty filled via ELP venue |
+| `FeeFeeQty` | float | Qty filled via fee-fee venue |
 | `FilledQty` | float | Total filled qty |
 | `StartQty` | float | Original order qty |
 | `AvgPx` | float | Share-weighted average fill price |
 | `ArrivalSlippageBps` | float | `1e4 * Side * (amid - AvgPx) / amid` |
-| `IvlSpreadBps` | float | Average spread during execution (bps) |
 | `adv` | float | Average daily volume |
-| `tickrule` | str | Tick size category |
-| `dailyvol` | float | Average daily volatility |
-| `ivlSpdVsAvgSpd` | float | Execution spread vs historical average |
-| `DeskId` | str | Trading desk identifier |
 | `isInt` | bool | Whether principal internalization was **enabled** for this order |
 
-Venue quantities must satisfy: `CRBQty + ATSPINQty + DarkQty + LitQty + InvertedQty + ConditionalQty + VenueTypeUnknownQty = FilledQty`.
+Venue quantities must satisfy: `CRBQty + ATSPINQty + DarkQty + LitQty + InvertedQty + ConditionalQty + VenueTypeUnknownQty + ELPQty + FeeFeeQty = FilledQty`.
+
+Derived columns added during data prep: `start_mins` (minutes since midnight from `EffectiveStartTime`), `log_adv` (log of `adv`), `duration_mins` (order duration in minutes), `CRBPct`/`ATSPINPct`/etc. venue percentages.
 
 ### Executions (parquet)
 
@@ -180,11 +182,13 @@ Outcome_i = β₀ + β₁·CRBPct_i + β₂·ATSPINPct_i + γ·Controls_i + FE +
 
 **3. Propensity Score Matching / IPW**
 
-Estimates propensity scores via logistic regression, then:
+Estimates propensity scores via logistic regression (handling mixed numeric/categorical covariates), then:
 - **IPW (full data)**: Inverse-propensity-weighted outcome means with trimming
-- **Nearest-neighbor matching (subsample)**: 1:1 matching with caliper
+- **k:1 Nearest-neighbor matching**: Matches each treated unit to k=10 control neighbors on the logit(PS) scale within exact-match strata (by default, within `Strategy`). Control outcomes are distance-weighted. A caliper based on the PS standard deviation filters poor matches.
 
-Both include balance diagnostics (standardized mean differences before/after).
+**Stratified estimation**: When `EXACT_MATCH_COLS` is configured, propensity scores are estimated independently within each stratum, preventing cross-stratum confounding.
+
+**Diagnostics returned**: strata counts and treatment proportions (before/after matching), propensity score common support overlap, PS decile distributions, nearest-neighbor distance summaries, and standardized mean differences (before/after).
 
 **4. Non-Parametric Dose-Response**
 
@@ -202,15 +206,17 @@ Bins CRBPct into quantiles, residualizes outcomes on controls, and computes adju
 
 ### Controls
 
-Continuous: `qtyOverADV`, `PcpRate`, `IvlSpreadBps`, `dailyvol`, `ivlSpdVsAvgSpd`, `log(Notional)`, `log(adv)`, `duration_mins`
+Continuous: `qtyOverADV` (log-transformed), `PcpRate`, `log_adv`, `duration_mins`, `start_mins`
 
-Fixed effects: `Strategy`, `RiskAversion`, `Side`, `tickrule`, `DeskId`
+Fixed effects: `Strategy`
+
+Data preprocessing: continuous controls and PSM covariates are winsorized to the 1st–99th percentile before regression to limit the influence of extreme values.
 
 Standard errors are clustered by `RIC` (configurable via `--cluster-col`).
 
 ## Output
 
-All plots are saved to `output/plots/` as PNG files.
+All plots are saved to `output/plots/` as PNG files. Parent analysis results are also exported as CSV files to `output/results/`.
 
 ### Parent-Level Plots
 

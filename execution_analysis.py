@@ -13,17 +13,22 @@ Analyses:
   D. Within-order markout comparison
   E. Markout by spread bucket
 """
+
 import numpy as np
 import pandas as pd
 
-from config import MARKOUT_HORIZONS_SEC, EXEC_CHUNK_SIZE
-from data_prep import iter_execution_chunks, load_executions_for_orders, _filter_auctions
+from config import MARKOUT_HORIZONS_SEC
+from data_prep import (
+    _filter_auctions,
+    iter_execution_chunks,
+    load_executions_for_orders,
+)
 from utils import bootstrap_mean_ci
-
 
 # ===================================================================
 # Helpers
 # ===================================================================
+
 
 def _rev_cols(prefix="rev", suffix="s_bps", horizons=None):
     """Return list of reversion column names for the given horizons."""
@@ -46,6 +51,7 @@ def _available(df, cols):
 # Core accumulator: group-level markout stats
 # ===================================================================
 
+
 class MarkoutAccumulator:
     """Online accumulator for computing group-level markout means & CIs.
 
@@ -56,9 +62,9 @@ class MarkoutAccumulator:
     def __init__(self, group_col, value_cols):
         self.group_col = group_col
         self.value_cols = value_cols
-        self._sum = {}   # {group: {col: float}}
-        self._ssq = {}   # sum of squares
-        self._cnt = {}   # count
+        self._sum = {}  # {group: {col: float}}
+        self._ssq = {}  # sum of squares
+        self._cnt = {}  # count
 
     def add_chunk(self, df):
         if self.group_col not in df.columns:
@@ -75,7 +81,7 @@ class MarkoutAccumulator:
                     continue
                 vals = sub[c].dropna().values
                 self._sum[grp][c] += vals.sum()
-                self._ssq[grp][c] += (vals ** 2).sum()
+                self._ssq[grp][c] += (vals**2).sum()
                 self._cnt[grp][c] += len(vals)
 
     def result(self):
@@ -87,17 +93,19 @@ class MarkoutAccumulator:
                 if n == 0:
                     continue
                 mean = self._sum[grp][c] / n
-                var = self._ssq[grp][c] / n - mean ** 2
+                var = self._ssq[grp][c] / n - mean**2
                 se = np.sqrt(max(var, 0) / n) if n > 1 else np.nan
-                rows.append({
-                    "group": grp,
-                    "column": c,
-                    "mean": mean,
-                    "se": se,
-                    "ci_lower": mean - 1.96 * se,
-                    "ci_upper": mean + 1.96 * se,
-                    "n": n,
-                })
+                rows.append(
+                    {
+                        "group": grp,
+                        "column": c,
+                        "mean": mean,
+                        "se": se,
+                        "ci_lower": mean - 1.96 * se,
+                        "ci_upper": mean + 1.96 * se,
+                        "n": n,
+                    }
+                )
         return pd.DataFrame(rows)
 
 
@@ -105,8 +113,8 @@ class MarkoutAccumulator:
 # A.  Signed markout curves
 # ===================================================================
 
-def compute_signed_markout_curves(exec_path=None, df=None, horizons=None,
-                                  exclude_auctions=False):
+
+def compute_signed_markout_curves(df, horizons=None):
     """Compute mean signed markouts (rev{x}s_bps) by isInt group.
 
     Parameters
@@ -122,19 +130,12 @@ def compute_signed_markout_curves(exec_path=None, df=None, horizons=None,
     """
     cols = _rev_cols(horizons=horizons)
     acc = MarkoutAccumulator("isInt", cols)
-
-    if df is not None:
-        if exclude_auctions:
-            df = _filter_auctions(df)
-        acc.add_chunk(df)
-    else:
-        for chunk in iter_execution_chunks(exec_path,
-                                           exclude_auctions=exclude_auctions):
-            acc.add_chunk(chunk)
-
+    acc.add_chunk(df)
     result = acc.result()
     if not result.empty:
-        result["horizon_sec"] = result["column"].str.extract(r"rev(\d+)s_bps").astype(float)
+        result["horizon_sec"] = (
+            result["column"].str.extract(r"rev(\d+)s_bps").astype(float)
+        )
     return result
 
 
@@ -142,24 +143,17 @@ def compute_signed_markout_curves(exec_path=None, df=None, horizons=None,
 # B.  Absolute markout curves
 # ===================================================================
 
-def compute_abs_markout_curves(exec_path=None, df=None, horizons=None,
-                               exclude_auctions=False):
+
+def compute_abs_markout_curves(df, horizons=None):
     """Compute mean |rev{x}s_bps| by isInt group."""
     cols = _abs_rev_cols(horizons=horizons)
     acc = MarkoutAccumulator("isInt", cols)
-
-    if df is not None:
-        if exclude_auctions:
-            df = _filter_auctions(df)
-        acc.add_chunk(df)
-    else:
-        for chunk in iter_execution_chunks(exec_path,
-                                           exclude_auctions=exclude_auctions):
-            acc.add_chunk(chunk)
-
+    acc.add_chunk(df)
     result = acc.result()
     if not result.empty:
-        result["horizon_sec"] = result["column"].str.extract(r"abs_rev(\d+)s_bps").astype(float)
+        result["horizon_sec"] = (
+            result["column"].str.extract(r"abs_rev(\d+)s_bps").astype(float)
+        )
     return result
 
 
@@ -167,8 +161,8 @@ def compute_abs_markout_curves(exec_path=None, df=None, horizons=None,
 # C.  Markout by intType
 # ===================================================================
 
-def compute_markout_by_inttype(exec_path=None, df=None, horizons=None,
-                               exclude_auctions=False):
+
+def compute_markout_by_inttype(df, horizons=None):
     """Compute mean signed markouts grouped by intType.
 
     Non-CRB fills are labelled "non-CRB" in the intType column.
@@ -187,23 +181,16 @@ def compute_markout_by_inttype(exec_path=None, df=None, horizons=None,
             chunk.loc[chunk["isInt"] != True, "_inttype_label"] = "non-CRB"
         return chunk
 
-    if df is not None:
-        if exclude_auctions:
-            df = _filter_auctions(df)
-        acc.add_chunk(_label_chunk(df))
-    else:
-        for chunk in iter_execution_chunks(exec_path,
-                                           exclude_auctions=exclude_auctions):
-            acc.add_chunk(_label_chunk(chunk))
-
+    acc.add_chunk(_label_chunk(df))
     result = acc.result()
     if not result.empty:
-        result["horizon_sec"] = result["column"].str.extract(r"rev(\d+)s_bps").astype(float)
+        result["horizon_sec"] = (
+            result["column"].str.extract(r"rev(\d+)s_bps").astype(float)
+        )
     return result
 
 
-def compute_abs_markout_by_inttype(exec_path=None, df=None, horizons=None,
-                                   exclude_auctions=False):
+def compute_abs_markout_by_inttype(df, horizons=None):
     """Compute mean |rev{x}s_bps| grouped by intType."""
     cols = _abs_rev_cols(horizons=horizons)
     acc = MarkoutAccumulator("_inttype_label", cols)
@@ -218,18 +205,12 @@ def compute_abs_markout_by_inttype(exec_path=None, df=None, horizons=None,
             chunk.loc[chunk["isInt"] != True, "_inttype_label"] = "non-CRB"
         return chunk
 
-    if df is not None:
-        if exclude_auctions:
-            df = _filter_auctions(df)
-        acc.add_chunk(_label_chunk(df))
-    else:
-        for chunk in iter_execution_chunks(exec_path,
-                                           exclude_auctions=exclude_auctions):
-            acc.add_chunk(_label_chunk(chunk))
-
+    acc.add_chunk(_label_chunk(df))
     result = acc.result()
     if not result.empty:
-        result["horizon_sec"] = result["column"].str.extract(r"abs_rev(\d+)s_bps").astype(float)
+        result["horizon_sec"] = (
+            result["column"].str.extract(r"abs_rev(\d+)s_bps").astype(float)
+        )
     return result
 
 
@@ -237,9 +218,14 @@ def compute_abs_markout_by_inttype(exec_path=None, df=None, horizons=None,
 # D.  Within-order markout comparison
 # ===================================================================
 
-def compute_within_order_markouts(parent_df, exec_path=None, exec_df=None,
-                                  horizons=None, sample_orders=200_000,
-                                  seed=42, exclude_auctions=False):
+
+def compute_within_order_markouts(
+    parent_df,
+    exec_df,
+    horizons=None,
+    sample_orders=200_000,
+    seed=42,
+):
     """Compare CRB vs non-CRB fill markouts within the same parent order.
 
     Strategy:
@@ -278,13 +264,7 @@ def compute_within_order_markouts(parent_df, exec_path=None, exec_df=None,
     order_set = set(order_ids)
 
     # Step 2: load executions for these orders
-    if exec_df is not None:
-        execs = exec_df[exec_df["AlgoOrderId"].isin(order_set)].copy()
-        if exclude_auctions:
-            execs = _filter_auctions(execs)
-    else:
-        execs = load_executions_for_orders(order_set, exec_path,
-                                           exclude_auctions=exclude_auctions)
+    execs = exec_df[exec_df["AlgoOrderId"].isin(order_set)].copy()
 
     if execs.empty:
         return {"paired_diff": pd.DataFrame(), "within_order_stats": pd.DataFrame()}
@@ -315,24 +295,28 @@ def compute_within_order_markouts(parent_df, exec_path=None, exec_df=None,
         mean_d, ci_lo, ci_hi = bootstrap_mean_ci(vals, n_boot=1000)
         is_abs = col.startswith("abs_")
         horizon = int(col.split("rev")[1].split("s_bps")[0])
-        rows.append({
-            "column": col,
-            "horizon_sec": horizon,
-            "is_absolute": is_abs,
-            "mean_diff": mean_d,
-            "ci_lower": ci_lo,
-            "ci_upper": ci_hi,
-            "n_orders": len(vals),
-        })
+        rows.append(
+            {
+                "column": col,
+                "horizon_sec": horizon,
+                "is_absolute": is_abs,
+                "mean_diff": mean_d,
+                "ci_lower": ci_lo,
+                "ci_upper": ci_hi,
+                "n_orders": len(vals),
+            }
+        )
 
     paired_diff = pd.DataFrame(rows)
 
     # Also return the per-order stats for plotting
-    within_stats = pd.DataFrame({
-        "AlgoOrderId": common,
-        **{f"crb_{c}": crb_means.loc[common, c].values for c in avail},
-        **{f"noncrb_{c}": non_crb_means.loc[common, c].values for c in avail},
-    })
+    within_stats = pd.DataFrame(
+        {
+            "AlgoOrderId": common,
+            **{f"crb_{c}": crb_means.loc[common, c].values for c in avail},
+            **{f"noncrb_{c}": non_crb_means.loc[common, c].values for c in avail},
+        }
+    )
 
     return {"paired_diff": paired_diff, "within_order_stats": within_stats}
 
@@ -341,18 +325,28 @@ def compute_within_order_markouts(parent_df, exec_path=None, exec_df=None,
 # E.  Markout by spread bucket
 # ===================================================================
 
-def compute_markout_by_spread(exec_path=None, df=None, horizons=None,
-                              n_buckets=5, exclude_auctions=False):
+
+def compute_markout_by_spread(df, horizons=None, n_buckets=5):
     """Compute markout curves sliced by spread quintile.
 
     Returns
     -------
     DataFrame with columns: spread_bucket, isInt, column, horizon_sec, mean, se, ...
     """
-    empty_result = pd.DataFrame(columns=[
-        "group", "column", "mean", "se", "ci_lower", "ci_upper",
-        "n", "spread_bucket", "isInt", "horizon_sec",
-    ])
+    empty_result = pd.DataFrame(
+        columns=[
+            "group",
+            "column",
+            "mean",
+            "se",
+            "ci_lower",
+            "ci_upper",
+            "n",
+            "spread_bucket",
+            "isInt",
+            "horizon_sec",
+        ]
+    )
     rev_cols = _rev_cols(horizons=horizons)
     acc = MarkoutAccumulator("_spread_isint", rev_cols)
 
@@ -367,8 +361,7 @@ def compute_markout_by_spread(exec_path=None, df=None, horizons=None,
                 chunk["spread"], bins=edges, include_lowest=True
             ).astype(str)
         chunk["_spread_isint"] = (
-            chunk["_spread_bucket"].astype(str) + " | "
-            + chunk["isInt"].astype(str)
+            chunk["_spread_bucket"].astype(str) + " | " + chunk["isInt"].astype(str)
         )
         # drop rows where spread is NaN (bucket = "nan")
         chunk = chunk[chunk["_spread_bucket"] != "nan"]
@@ -381,36 +374,12 @@ def compute_markout_by_spread(exec_path=None, df=None, horizons=None,
         edges = np.nanpercentile(vals, np.linspace(0, 100, n_buckets + 1))
         return np.unique(edges)
 
-    if df is not None:
-        if exclude_auctions:
-            df = _filter_auctions(df)
-        if "spread" not in df.columns:
-            return empty_result
-        edges = _compute_edges(df["spread"])
-        if len(edges) < 2:
-            return empty_result
-        acc.add_chunk(_bucket_chunk(df, edges))
-    else:
-        # two-pass: first compute global spread edges, then accumulate
-        spread_sample = []
-        for chunk in iter_execution_chunks(exec_path,
-                                           exclude_auctions=exclude_auctions):
-            spread_vals = chunk["spread"].dropna()
-            if len(spread_vals) > 0:
-                spread_sample.append(spread_vals.sample(
-                    n=min(100_000, len(spread_vals)), random_state=42
-                ))
-        if not spread_sample:
-            return empty_result
-        spread_all = pd.concat(spread_sample)
-        edges = _compute_edges(spread_all)
-        if len(edges) < 2:
-            return empty_result
-
-        for chunk in iter_execution_chunks(exec_path,
-                                           exclude_auctions=exclude_auctions):
-            acc.add_chunk(_bucket_chunk(chunk, edges))
-
+    if "spread" not in df.columns:
+        return empty_result
+    edges = _compute_edges(df["spread"])
+    if len(edges) < 2:
+        return empty_result
+    acc.add_chunk(_bucket_chunk(df, edges))
     result = acc.result()
     if result.empty:
         return result
@@ -425,8 +394,8 @@ def compute_markout_by_spread(exec_path=None, df=None, horizons=None,
 # Convenience: run everything
 # ===================================================================
 
-def run_full_execution_analysis(parent_df, exec_path=None, exec_df=None,
-                                exclude_auctions=False):
+
+def run_full_execution_analysis(parent_df, exec_df):
     """Run all execution-level analyses.
 
     Pass either exec_path (for chunked reading) or exec_df (pre-loaded).
@@ -435,8 +404,7 @@ def run_full_execution_analysis(parent_df, exec_path=None, exec_df=None,
     -------
     dict of analysis results
     """
-    kw = {"exec_path": exec_path} if exec_df is None else {"df": exec_df}
-    kw["exclude_auctions"] = exclude_auctions
+    kw = {"df": exec_df}
 
     print("  [1/6] Signed markout curves ...")
     signed = compute_signed_markout_curves(**kw)
@@ -451,9 +419,10 @@ def run_full_execution_analysis(parent_df, exec_path=None, exec_df=None,
     abs_by_inttype = compute_abs_markout_by_inttype(**kw)
 
     print("  [5/6] Within-order markout comparison ...")
-    within = compute_within_order_markouts(parent_df, exec_path=exec_path,
-                                           exec_df=exec_df,
-                                           exclude_auctions=exclude_auctions)
+    within = compute_within_order_markouts(
+        parent_df,
+        exec_df=exec_df,
+    )
 
     print("  [6/6] Markout by spread bucket ...")
     by_spread = compute_markout_by_spread(**kw)

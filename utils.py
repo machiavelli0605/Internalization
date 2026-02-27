@@ -1,18 +1,19 @@
 """
 Shared utility functions for internalization analysis.
 """
+
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from statsmodels.formula.api import ols as smf_ols
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
-
+from statsmodels.formula.api import ols as smf_ols
 
 # ===================================================================
 # Regression helpers
 # ===================================================================
+
 
 def build_ols_formula(outcome, treatments, continuous_controls, categorical_fe):
     """Build a statsmodels OLS formula string.
@@ -34,8 +35,15 @@ def build_ols_formula(outcome, treatments, continuous_controls, categorical_fe):
     return f"{outcome} ~ {rhs}"
 
 
-def run_ols(df, outcome, treatments, continuous_controls, categorical_fe,
-            cluster_col=None, sample_n=None):
+def run_ols(
+    df,
+    outcome,
+    treatments,
+    continuous_controls,
+    categorical_fe,
+    cluster_col=None,
+    sample_n=None,
+):
     """Run OLS regression and return results.
 
     Parameters
@@ -64,7 +72,9 @@ def run_ols(df, outcome, treatments, continuous_controls, categorical_fe,
         return None
 
     # filter categorical FE to those with >1 level in the working data
-    active_fe = [c for c in categorical_fe if c in work.columns and work[c].nunique() > 1]
+    active_fe = [
+        c for c in categorical_fe if c in work.columns and work[c].nunique() > 1
+    ]
 
     formula = build_ols_formula(outcome, treatments, continuous_controls, active_fe)
     try:
@@ -97,22 +107,25 @@ def extract_treatment_coefficients(result, treatments):
             label = t  # fallback
         if label not in result.params.index:
             continue
-        rows.append({
-            "treatment": t,
-            "coef": result.params[label],
-            "se": result.bse[label],
-            "ci_lower": conf.loc[label, 0],
-            "ci_upper": conf.loc[label, 1],
-            "pvalue": result.pvalues[label],
-            "nobs": int(result.nobs),
-            "r2": result.rsquared,
-        })
+        rows.append(
+            {
+                "treatment": t,
+                "coef": result.params[label],
+                "se": result.bse[label],
+                "ci_lower": conf.loc[label, 0],
+                "ci_upper": conf.loc[label, 1],
+                "pvalue": result.pvalues[label],
+                "nobs": int(result.nobs),
+                "r2": result.rsquared,
+            }
+        )
     return pd.DataFrame(rows)
 
 
 # ===================================================================
 # Propensity Score Matching / IPW
 # ===================================================================
+
 
 def estimate_propensity_scores(df, treatment_col, covariates, max_iter=1000):
     """Estimate propensity scores via logistic regression.
@@ -125,7 +138,7 @@ def estimate_propensity_scores(df, treatment_col, covariates, max_iter=1000):
     y = df[treatment_col].astype(int)
 
     # drop rows with NaN in covariates
-    mask = X.notna().all(axis=1)
+    mask = X.notna().all(axis=1) & y.notna()
     X_clean = X.loc[mask]
     y_clean = y.loc[mask]
 
@@ -138,13 +151,36 @@ def estimate_propensity_scores(df, treatment_col, covariates, max_iter=1000):
             ps[mask.values] = y_clean.mean()
         return ps
 
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_clean)
+    cat_cols = [
+        c
+        for c in X_clean.columns
+        if X_clean[c].dtype == "object" or str(X_clean[c].dtype).startswith("category")
+    ]
+    num_cols = [c for c in X_clean.columns if c not in cat_cols]
+    X_num = (
+        X_clean[num_cols].astype(float)
+        if num_cols
+        else pd.DataFrame(index=X_clean.index)
+    )
+    X_cat = (
+        pd.get_dummies(X_clean[cat_cols], drop_first=True)
+        if cat_cols
+        else pd.DataFrame(index=X_clean.index)
+    )
+
+    if not X_num.empty:
+        scaler = StandardScaler()
+        X_num_scaled = pd.DataFrame(
+            scaler.fit_transform(X_num), columns=num_cols, index=X_num.index
+        )
+    else:
+        X_num_scaled = X_num
+    X_final = pd.concat([X_num_scaled, X_cat], axis=1)
 
     lr = LogisticRegression(max_iter=max_iter, solver="lbfgs", C=1.0)
     try:
-        lr.fit(X_scaled, y_clean)
-        ps[mask.values] = lr.predict_proba(X_scaled)[:, 1]
+        lr.fit(X_final, y_clean)
+        ps[mask.values] = lr.predict_proba(X_final)[:, 1]
     except Exception:
         # fallback: return naive proportion
         ps[mask.values] = y_clean.mean()
@@ -171,8 +207,10 @@ def nearest_neighbor_match(ps_treated, ps_control, n_neighbors=1, caliper=None):
     ps_c = np.asarray(ps_control).reshape(-1, 1)
 
     if len(ps_t) == 0 or len(ps_c) == 0:
-        return (np.array([], dtype=int).reshape(0, n_neighbors),
-                np.array([], dtype=float).reshape(0, n_neighbors))
+        return (
+            np.array([], dtype=int).reshape(0, n_neighbors),
+            np.array([], dtype=float).reshape(0, n_neighbors),
+        )
 
     # can't request more neighbors than control units
     effective_k = min(n_neighbors, len(ps_c))
@@ -221,6 +259,7 @@ def compute_ipw_weights(ps, treatment, trim_pct=0.05):
 # Covariate balance (Standardized Mean Difference)
 # ===================================================================
 
+
 def compute_smd(df, treatment_col, covariates):
     """Compute standardized mean differences for each covariate.
 
@@ -241,12 +280,14 @@ def compute_smd(df, treatment_col, covariates):
         vc = control[cov].var()
         pooled_sd = np.sqrt((vt + vc) / 2)
         smd = (mt - mc) / pooled_sd if pooled_sd > 0 else 0.0
-        rows.append({
-            "covariate": cov,
-            "smd": smd,
-            "mean_treated": mt,
-            "mean_control": mc,
-        })
+        rows.append(
+            {
+                "covariate": cov,
+                "smd": smd,
+                "mean_treated": mt,
+                "mean_control": mc,
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -267,13 +308,16 @@ def compute_weighted_smd(df, treatment_col, covariates, weights):
         vc = np.var(x[c_mask])
         pooled_sd = np.sqrt((vt + vc) / 2)
         smd = (mt - mc) / pooled_sd if pooled_sd > 0 else 0.0
-        rows.append({"covariate": cov, "smd": smd, "mean_treated": mt, "mean_control": mc})
+        rows.append(
+            {"covariate": cov, "smd": smd, "mean_treated": mt, "mean_control": mc}
+        )
     return pd.DataFrame(rows)
 
 
 # ===================================================================
 # Bootstrap confidence intervals
 # ===================================================================
+
 
 def bootstrap_ci(data, statistic_func, n_boot=1000, ci=0.95, seed=42):
     """Compute bootstrap confidence interval for a statistic.
@@ -316,6 +360,7 @@ def bootstrap_mean_ci(data, n_boot=1000, ci=0.95, seed=42):
 # Winsorization
 # ===================================================================
 
+
 def winsorize(series, lower=0.01, upper=0.99):
     """Winsorize a Series at the given percentiles."""
     lo_val = series.quantile(lower)
@@ -326,6 +371,7 @@ def winsorize(series, lower=0.01, upper=0.99):
 # ===================================================================
 # Fixed-effects demeaning (within estimator)
 # ===================================================================
+
 
 def demean_by_groups(df, value_cols, group_cols):
     """Demean columns within groups (for absorbing high-dim FE).
@@ -353,8 +399,10 @@ def demean_by_groups(df, value_cols, group_cols):
 # Adjusted means by bucket (for dose-response)
 # ===================================================================
 
-def compute_adjusted_means(df, outcome, bucket_col, continuous_controls,
-                           categorical_fe, n_boot=500):
+
+def compute_adjusted_means(
+    df, outcome, bucket_col, continuous_controls, categorical_fe, n_boot=500
+):
     """Compute confounder-adjusted means per bucket.
 
     Approach: residualize outcome on controls, then compute mean residual
@@ -371,7 +419,9 @@ def compute_adjusted_means(df, outcome, bucket_col, continuous_controls,
         return pd.DataFrame(columns=["bucket", "adj_mean", "ci_lower", "ci_upper", "n"])
 
     # residualize outcome on controls
-    active_fe = [c for c in categorical_fe if c in work.columns and work[c].nunique() > 1]
+    active_fe = [
+        c for c in categorical_fe if c in work.columns and work[c].nunique() > 1
+    ]
     formula = build_ols_formula(outcome, [], available_controls, active_fe)
     try:
         res = smf_ols(formula, data=work).fit()
@@ -386,11 +436,13 @@ def compute_adjusted_means(df, outcome, bucket_col, continuous_controls,
         if len(vals) == 0:
             continue
         mean_val, ci_lo, ci_hi = bootstrap_mean_ci(vals, n_boot=n_boot)
-        rows.append({
-            "bucket": bucket,
-            "adj_mean": mean_val,
-            "ci_lower": ci_lo,
-            "ci_upper": ci_hi,
-            "n": len(vals),
-        })
+        rows.append(
+            {
+                "bucket": bucket,
+                "adj_mean": mean_val,
+                "ci_lower": ci_lo,
+                "ci_upper": ci_hi,
+                "n": len(vals),
+            }
+        )
     return pd.DataFrame(rows)

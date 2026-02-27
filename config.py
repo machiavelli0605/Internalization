@@ -1,15 +1,18 @@
 """
 Configuration for internalization market impact analysis.
 """
+
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Data paths – update these to point at your actual parquet files
 # ---------------------------------------------------------------------------
-PARENT_DATA_PATH = Path("data/parent_orders.parquet")
-EXECUTION_DATA_PATH = Path("data/executions.parquet")
+PARENT_DATA_PATH = Path("../data/parent_orders.parquet")
+EXECUTION_DATA_PATH = Path("../data/executions.parquet")
 
-OUTPUT_DIR = Path("output")
+OUTPUT_DIR = Path("../output")
+RESULT_DIR = OUTPUT_DIR / "results"
+RESULT_DIR.mkdir(parents=True, exist_ok=True)
 PLOT_DIR = OUTPUT_DIR / "plots"
 PLOT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -26,16 +29,13 @@ CRB_BUCKET_LABELS = ["0%", "(0-5%]", "(5-15%]", "(15-30%]", "(30-50%]", "(50%+]"
 CONTINUOUS_CONTROLS = [
     "qtyOverADV",
     "PcpRate",
-    "IvlSpreadBps",
-    "dailyvol",
-    "ivlSpdVsAvgSpd",
-    "log_notional",
     "log_adv",
     "duration_mins",
+    "start_mins",
 ]
 
-CATEGORICAL_FE = ["Strategy", "RiskAversion", "Side", "tickrule"]
-ENTITY_FE = ["DeskId"]  # Account can be added but is high-cardinality
+CATEGORICAL_FE = ["Strategy"]
+ENTITY_FE = []  # Account can be added but is high-cardinality
 
 TREATMENT_COLS_ITT = ["isInt"]
 TREATMENT_COLS_DOSE = ["CRBPct", "ATSPINPct"]
@@ -49,15 +49,14 @@ OUTCOME_VARS = [
 ]
 
 # For PSM / matching
+N_NEIGHBORS = 10
+EXACT_MATCH_COLS = ["Strategy"]
 PSM_COVARIATES = [
     "qtyOverADV",
     "PcpRate",
-    "IvlSpreadBps",
-    "dailyvol",
-    "ivlSpdVsAvgSpd",
-    "log_notional",
     "log_adv",
     "duration_mins",
+    "start_mins",
 ]
 
 # ---------------------------------------------------------------------------
@@ -71,6 +70,8 @@ VENUE_QTY_COLS = [
     "InvertedQty",
     "ConditionalQty",
     "VenueTypeUnknownQty",
+    "ELPQty",
+    "FeeFeeQty",
 ]
 
 # ---------------------------------------------------------------------------
@@ -101,12 +102,15 @@ PLOT_FORMAT = "png"
 # Auction exclusion helpers
 # ---------------------------------------------------------------------------
 
+
 def get_no_auction_path(path):
     """Derive the no-auction variant of a parquet file path."""
     p = Path(path)
     return p.with_name(p.stem + "_no_auction" + p.suffix)
-COLOR_CRB = "#1f77b4"       # blue
-COLOR_NON_CRB = "#ff7f0e"   # orange
-COLOR_TREATED = "#2ca02c"    # green
-COLOR_CONTROL = "#d62728"    # red
+
+
+COLOR_CRB = "#1f77b4"  # blue
+COLOR_NON_CRB = "#ff7f0e"  # orange
+COLOR_TREATED = "#2ca02c"  # green
+COLOR_CONTROL = "#d62728"  # red
 PALETTE_INTTYPE = "Set2"

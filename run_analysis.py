@@ -7,17 +7,27 @@ Usage:
     python run_analysis.py --exec-only              # execution analysis only
     python run_analysis.py --parent-data path.parquet --exec-data path.parquet
 """
+
 import argparse
 import time
 import warnings
 
+import numpy as np
 import pandas as pd
 
-from config import PARENT_DATA_PATH, EXECUTION_DATA_PATH, OUTCOME_VARS, PLOT_DIR
-from data_prep import load_parent_data, load_execution_data, sample_parent_orders
-from parent_analysis import run_full_parent_analysis
+from config import (
+    CONTINUOUS_CONTROLS,
+    EXECUTION_DATA_PATH,
+    OUTCOME_VARS,
+    PARENT_DATA_PATH,
+    PLOT_DIR,
+    PSM_COVARIATES,
+    RESULT_DIR,
+)
+from data_prep import load_execution_data, load_parent_data, sample_parent_orders
 from execution_analysis import run_full_execution_analysis
-from plots import generate_parent_plots, generate_execution_plots
+from parent_analysis import run_full_parent_analysis
+from plots import generate_execution_plots, generate_parent_plots
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -44,9 +54,11 @@ def _print_regression_summary(reg_results):
                 sig = "**"
             elif row["pvalue"] < 0.05:
                 sig = "*"
-            print(f"    {row['outcome']:25s}  coef={row['coef']:+8.3f}  "
-                  f"SE={row['se']:.3f}  p={row['pvalue']:.4f}{sig}  "
-                  f"n={row['nobs']:,.0f}")
+            print(
+                f"    {row['outcome']:25s}  coef={row['coef']:+8.3f}  "
+                f"SE={row['se']:.3f}  p={row['pvalue']:.4f}{sig}  "
+                f"n={row['nobs']:,.0f}"
+            )
 
 
 def _print_psm_summary(psm_results):
@@ -55,9 +67,11 @@ def _print_psm_summary(psm_results):
     if nn is not None and not nn.empty:
         print("\n  Nearest-Neighbor Matched Outcome Differences (Treated − Control):")
         for _, row in nn.iterrows():
-            print(f"    {row['outcome']:25s}  diff={row['diff']:+8.3f}  "
-                  f"CI=[{row['diff_ci_lower']:+.3f}, {row['diff_ci_upper']:+.3f}]  "
-                  f"n_pairs={row['n_pairs']:,.0f}")
+            print(
+                f"    {row['outcome']:25s}  diff={row['diff']:+8.3f}  "
+                f"CI=[{row['diff_ci_lower']:+.3f}, {row['diff_ci_upper']:+.3f}]  "
+                f"n_pairs={row['n_pairs']:,.0f}"
+            )
 
     ipw = psm_results.get("ipw_outcomes")
     if ipw is not None and not ipw.empty:
@@ -67,8 +81,10 @@ def _print_psm_summary(psm_results):
             for outcome in pivot.index:
                 t_val = pivot.loc[outcome, "treated"]
                 c_val = pivot.loc[outcome, "control"]
-                print(f"    {outcome:25s}  treated={t_val:+8.3f}  "
-                      f"control={c_val:+8.3f}  diff={t_val - c_val:+8.3f}")
+                print(
+                    f"    {outcome:25s}  treated={t_val:+8.3f}  "
+                    f"control={c_val:+8.3f}  diff={t_val - c_val:+8.3f}"
+                )
 
 
 def _print_dose_response_summary(dr_results):
@@ -76,9 +92,11 @@ def _print_dose_response_summary(dr_results):
     for outcome, dr in dr_results.items():
         print(f"\n  {outcome}:")
         for _, row in dr.iterrows():
-            print(f"    {row['bucket']:12s}  adj_mean={row['adj_mean']:+8.3f}  "
-                  f"CI=[{row['ci_lower']:+.3f}, {row['ci_upper']:+.3f}]  "
-                  f"n={row['n']:,.0f}")
+            print(
+                f"    {row['bucket']:12s}  adj_mean={row['adj_mean']:+8.3f}  "
+                f"CI=[{row['ci_lower']:+.3f}, {row['ci_upper']:+.3f}]  "
+                f"n={row['n']:,.0f}"
+            )
 
 
 def _print_markout_summary(exec_results):
@@ -90,8 +108,7 @@ def _print_markout_summary(exec_results):
             label = "CRB" if is_int else "Non-CRB"
             sub = signed[signed["group"] == is_int].sort_values("horizon_sec")
             vals = "  ".join(
-                f"{int(r['horizon_sec'])}s={r['mean']:+.3f}"
-                for _, r in sub.iterrows()
+                f"{int(r['horizon_sec'])}s={r['mean']:+.3f}" for _, r in sub.iterrows()
             )
             print(f"    {label:10s}  {vals}")
 
@@ -102,14 +119,17 @@ def _print_markout_summary(exec_results):
         if not signed_p.empty:
             print("\n  Within-Order Paired Difference (CRB − Non-CRB, signed):")
             for _, row in signed_p.iterrows():
-                print(f"    {int(row['horizon_sec'])}s:  diff={row['mean_diff']:+.3f}  "
-                      f"CI=[{row['ci_lower']:+.3f}, {row['ci_upper']:+.3f}]  "
-                      f"n={row['n_orders']:,.0f}")
+                print(
+                    f"    {int(row['horizon_sec'])}s:  diff={row['mean_diff']:+.3f}  "
+                    f"CI=[{row['ci_lower']:+.3f}, {row['ci_upper']:+.3f}]  "
+                    f"n={row['n_orders']:,.0f}"
+                )
 
 
 # ===================================================================
 # Main
 # ===================================================================
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -119,12 +139,20 @@ def main():
     parser.add_argument("--exec-data", default=str(EXECUTION_DATA_PATH))
     parser.add_argument("--parent-only", action="store_true")
     parser.add_argument("--exec-only", action="store_true")
-    parser.add_argument("--cluster-col", default="RIC",
-                        help="Column for clustered standard errors")
-    parser.add_argument("--exec-sample", type=int, default=5_000_000,
-                        help="Sample size for execution-level KDE plots")
-    parser.add_argument("--exclude-auctions", action="store_true",
-                        help="Exclude auction fills from analysis")
+    parser.add_argument(
+        "--cluster-col", default="RIC", help="Column for clustered standard errors"
+    )
+    parser.add_argument(
+        "--exec-sample",
+        type=int,
+        default=5_000_000,
+        help="Sample size for execution-level KDE plots",
+    )
+    parser.add_argument(
+        "--exclude-auctions",
+        action="store_true",
+        help="Exclude auction fills from analysis",
+    )
     args = parser.parse_args()
 
     t0 = time.time()
@@ -141,15 +169,40 @@ def main():
         print("=" * 60)
 
         print(f"\nLoading parent data from {args.parent_data} ...")
-        parent_df = load_parent_data(args.parent_data,
-                                     exclude_auctions=args.exclude_auctions)
+        parent_df = load_parent_data(
+            args.parent_data, exclude_auctions=args.exclude_auctions
+        )
         print(f"  Loaded {len(parent_df):,} parent orders.")
-        print(f"  isInt=True: {parent_df['isInt'].sum():,}  "
-              f"({parent_df['isInt'].mean()*100:.1f}%)")
-        print(f"  hasCRB: {parent_df['hasCRB'].sum():,}  "
-              f"({parent_df['hasCRB'].mean()*100:.1f}%)")
+        print(
+            f"  isInt=True: {parent_df['isInt'].sum():,}  "
+            f"({parent_df['isInt'].mean() * 100:.1f}%)"
+        )
+        print(
+            f"  hasCRB: {parent_df['hasCRB'].sum():,}  "
+            f"({parent_df['hasCRB'].mean() * 100:.1f}%)"
+        )
 
         print("\nRunning parent-level analyses ...")
+        cap_quantile = 0.99
+        for c in set(CONTINUOUS_CONTROLS + PSM_COVARIATES):
+            if pd.api.types.is_numeric_dtype(
+                parent_df[c]
+            ) or pd.api.types.is_bool_dtype(parent_df[c]):
+                parent_df[c] = pd.to_numeric(parent_df[c], errors="coerce")
+                arr = parent_df[c].to_numpy(dtype=float, copy=False)
+                nonfinite = ~np.isfinite(arr)
+                finite_vals = parent_df.loc[~nonfinite, c].dropna()
+                if len(finite_vals) > 0:
+                    lo = finite_vals.quantile(1 - cap_quantile)
+                    hi = finite_vals.quantile(cap_quantile)
+                    parent_df.loc[
+                        np.isposinf(parent_df[c]) | (parent_df[c] > hi), c
+                    ] = hi
+                    parent_df.loc[
+                        np.isneginf(parent_df[c]) | (parent_df[c] < lo), c
+                    ] = lo
+                else:
+                    parent_df.loc[nonfinite, c] = np.nan
         parent_results = run_full_parent_analysis(
             parent_df, cluster_col=args.cluster_col
         )
@@ -170,6 +223,13 @@ def main():
         print("-" * 60)
         _print_dose_response_summary(parent_results["dose_response"])
 
+        for tor, res in parent_results.items():
+            for dn, dv in res.items():
+                if isinstance(dv, dict) and all(np.isscalar(x) for x in dv.values()):
+                    df = pd.DataFrame([dv])
+                else:
+                    df = pd.DataFrame(dv)
+                df.to_csv(f"{RESULT_DIR}/{tor}_{dn}.csv", index=False)
         # --- Generate plots ---
         generate_parent_plots(parent_df, parent_results)
 
@@ -186,13 +246,14 @@ def main():
         # We need parent_df for within-order analysis
         if args.exec_only:
             print(f"  Loading parent data for within-order analysis ...")
-            parent_df = load_parent_data(args.parent_data,
-                                         exclude_auctions=args.exclude_auctions)
+            parent_df = load_parent_data(
+                args.parent_data, exclude_auctions=args.exclude_auctions
+            )
 
-        exec_results = run_full_execution_analysis(
-            parent_df, exec_path=args.exec_data,
-            exclude_auctions=args.exclude_auctions
+        exec_df = load_execution_data(
+            path=args.exec_data, exclude_auctions=args.exclude_auctions
         )
+        exec_results = run_full_execution_analysis(parent_df, exec_df=exec_df)
 
         # --- Print summaries ---
         print("\n" + "-" * 60)
@@ -202,29 +263,10 @@ def main():
 
         # --- Generate plots ---
         # For E6 (KDE), we need a sample loaded into memory
-        print(f"\n  Loading execution sample (n={args.exec_sample:,}) for KDE plots ...")
-        try:
-            exec_sample = load_execution_data(args.exec_data,
-                                              exclude_auctions=args.exclude_auctions)
-            if len(exec_sample) > args.exec_sample:
-                exec_sample = exec_sample.sample(n=args.exec_sample, random_state=42)
-        except (MemoryError, Exception) as e:
-            print(f"    Full load failed ({e.__class__.__name__}); sampling via chunks ...")
-            from data_prep import iter_execution_chunks
-            chunks = []
-            total = 0
-            for chunk in iter_execution_chunks(args.exec_data,
-                                                exclude_auctions=args.exclude_auctions):
-                n_take = min(len(chunk), args.exec_sample - total)
-                if n_take <= 0:
-                    break
-                chunks.append(chunk.sample(n=n_take, random_state=42)
-                              if n_take < len(chunk) else chunk)
-                total += n_take
-                if total >= args.exec_sample:
-                    break
-            exec_sample = pd.concat(chunks, ignore_index=True) if chunks else None
-
+        print(
+            f"\n  Loading execution sample (n={args.exec_sample:,}) for KDE plots ..."
+        )
+        exec_sample = exec_df.sample(n=min(args.exec_sample, len(exec_df)), random_state=42)
         generate_execution_plots(exec_results, exec_df_sample=exec_sample)
 
     # -----------------------------------------------------------------
