@@ -253,9 +253,9 @@ def main():
     if "isAuction" in exec_no_auction.columns:
         assert exec_no_auction["isAuction"].sum() == 0
 
-    # Run execution analysis with exclude_auctions on pre-loaded df
+    # Run execution analysis on pre-filtered (no auction) df
     exec_results_no_auction = run_full_execution_analysis(
-        parent_df, exec_df=exec_df, exclude_auctions=True
+        parent_df, exec_df=exec_no_auction
     )
     assert "signed_markouts" in exec_results_no_auction
     print("   Auction exclusion path: OK")
