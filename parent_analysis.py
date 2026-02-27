@@ -97,13 +97,23 @@ def stratified_sample(
         extra[expandable] = np.round(weights * gap).astype(int)
         extra = np.minimum(extra, room)
         alloc += extra
+    # if rounding left us short, greedily fill from strata with most room
+    while alloc.sum() < n_total:
+        room = stratum_sizes.values - alloc
+        if room.max() == 0:
+            break
+        alloc[np.argmax(room)] += 1
     # if rounding pushed us over, trim from largest allocations
     while alloc.sum() > n_total:
         over = alloc.sum() - n_total
         idx = np.argsort(-alloc)
+        trimmed = 0
         for i in idx[:over]:
             if alloc[i] > min_per_stratum:
                 alloc[i] -= 1
+                trimmed += 1
+        if trimmed == 0:
+            break
 
     alloc_map = dict(zip(stratum_sizes.index, alloc))
 
@@ -470,7 +480,10 @@ def run_psm_analysis(
         treated_all = work[work[treatment_col].astype(bool)]
         budget = max_sample - len(treated_all)
         if budget <= 0:
-            work_nn = stratified_sample(treated_all, strata_cols=exact_cols, n_total=max_sample, random_state=42, treatment_col=None)
+            controls = work[~work[treatment_col].astype(bool)]
+            treated_s = stratified_sample(treated_all, strata_cols=exact_cols, n_total=max_sample // 2, random_state=42, treatment_col=None)
+            controls_s = stratified_sample(controls, strata_cols=exact_cols, n_total=max_sample // 2, random_state=42, treatment_col=None, preserve_treatment_share=False)
+            work_nn = pd.concat([treated_s, controls_s], axis=0)
         else:
             controls = work[~work[treatment_col].astype(bool)]
             controls_s = stratified_sample(controls, strata_cols=exact_cols, n_total=budget, random_state=42, treatment_col=None, preserve_treatment_share=False)
