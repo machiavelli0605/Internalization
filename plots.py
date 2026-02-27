@@ -5,7 +5,7 @@ Parent-level plots (P1–P7):
   P1. CRBPct distribution
   P2. Covariate balance (Love plot)
   P3. Regression coefficient forest plot
-  P4. Dose-response curve
+  P4. Dose-response PSM
   P5. PSM balance diagnostics
   P6. PSM / IPW outcome comparison
   P7. Impact distribution by CRBPct bucket
@@ -188,13 +188,20 @@ def plot_regression_coefficients(reg_results):
 
 
 # =====================================================================
-# P4.  Dose-response curve
+# P4.  Dose-response PSM
 # =====================================================================
 
 def plot_dose_response(dose_response_results):
-    """Plot confounder-adjusted mean outcomes by CRBPct bucket."""
-    outcomes = [o for o in OUTCOME_VARS if o in dose_response_results]
+    """Plot ATT by CRBPct bucket from dose-response PSM."""
+    att = dose_response_results.get("att_by_bucket")
+    if att is None or att.empty:
+        return
+
+    outcomes = [o for o in OUTCOME_VARS if o in att["outcome"].values]
     n = len(outcomes)
+    if n == 0:
+        return
+
     ncols = min(3, n)
     nrows = (n + ncols - 1) // ncols
 
@@ -203,32 +210,37 @@ def plot_dose_response(dose_response_results):
 
     for idx, outcome in enumerate(outcomes):
         ax = axes[idx]
-        dr = dose_response_results[outcome]
+        dr = att[att["outcome"] == outcome].copy()
+        if dr.empty:
+            ax.set_visible(False)
+            continue
 
         x = np.arange(len(dr))
         ax.errorbar(
-            x, dr["adj_mean"],
-            yerr=[dr["adj_mean"] - dr["ci_lower"],
-                  dr["ci_upper"] - dr["adj_mean"]],
+            x, dr["att"].values,
+            yerr=[dr["att"].values - dr["ci_lower"].values,
+                  dr["ci_upper"].values - dr["att"].values],
             fmt="o-", capsize=4, color=COLOR_CRB, linewidth=2, markersize=7,
         )
         ax.set_xticks(x)
-        ax.set_xticklabels(dr["bucket"], rotation=45, ha="right", fontsize=9)
-        ax.set_ylabel("Adjusted Mean (bps)")
+        ax.set_xticklabels(dr["bucket"].values, rotation=45, ha="right", fontsize=9)
+        ax.set_ylabel("ATT vs 0% CRB (bps)")
         ax.set_title(OUTCOME_LABELS.get(outcome, outcome))
         ax.axhline(0, color="grey", linestyle="--", alpha=0.5)
 
         # annotate sample sizes
-        for i, row in dr.iterrows():
-            ax.annotate(f'n={row["n"]:,.0f}', (i, row["ci_lower"]),
-                        textcoords="offset points", xytext=(0, -12),
-                        fontsize=7, ha="center", color="grey")
+        for i, (_, row) in enumerate(dr.iterrows()):
+            ax.annotate(
+                f'n={row["n_treated"]:,.0f}',
+                (i, row["ci_lower"]),
+                textcoords="offset points", xytext=(0, -12),
+                fontsize=7, ha="center", color="grey",
+            )
 
-    # hide unused axes
     for idx in range(n, len(axes)):
         axes[idx].set_visible(False)
 
-    fig.suptitle("P4: Dose-Response — Adjusted Mean Impact by CRBPct Bucket",
+    fig.suptitle("P4: Dose-Response PSM — ATT vs 0% CRB by Dose Level",
                  fontsize=14)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     _savefig(fig, "P4_dose_response")
@@ -635,7 +647,7 @@ def generate_parent_plots(parent_df, parent_results):
     if reg:
         plot_regression_coefficients(reg)
 
-    print("    P4: Dose-response curves")
+    print("    P4: Dose-response PSM")
     dr = parent_results.get("dose_response", {})
     if dr:
         plot_dose_response(dr)
