@@ -134,7 +134,7 @@ def compute_signed_markout_curves(df, horizons=None):
     result = acc.result()
     if not result.empty:
         result["horizon_sec"] = (
-            result["column"].str.extract(r"rev(\d+)s_bps").astype(float)
+            result["column"].str.extract(r"rev(\d+)s_bps")[0].astype(float)
         )
     return result
 
@@ -152,7 +152,7 @@ def compute_abs_markout_curves(df, horizons=None):
     result = acc.result()
     if not result.empty:
         result["horizon_sec"] = (
-            result["column"].str.extract(r"abs_rev(\d+)s_bps").astype(float)
+            result["column"].str.extract(r"abs_rev(\d+)s_bps")[0].astype(float)
         )
     return result
 
@@ -185,7 +185,7 @@ def compute_markout_by_inttype(df, horizons=None):
     result = acc.result()
     if not result.empty:
         result["horizon_sec"] = (
-            result["column"].str.extract(r"rev(\d+)s_bps").astype(float)
+            result["column"].str.extract(r"rev(\d+)s_bps")[0].astype(float)
         )
     return result
 
@@ -209,7 +209,7 @@ def compute_abs_markout_by_inttype(df, horizons=None):
     result = acc.result()
     if not result.empty:
         result["horizon_sec"] = (
-            result["column"].str.extract(r"abs_rev(\d+)s_bps").astype(float)
+            result["column"].str.extract(r"abs_rev(\d+)s_bps")[0].astype(float)
         )
     return result
 
@@ -386,7 +386,7 @@ def compute_markout_by_spread(df, horizons=None, n_buckets=5):
     # parse composite key back into separate columns
     result[["spread_bucket", "isInt"]] = result["group"].str.split(" \\| ", expand=True)
     result["isInt"] = result["isInt"].map({"True": True, "False": False})
-    result["horizon_sec"] = result["column"].str.extract(r"rev(\d+)s_bps").astype(float)
+    result["horizon_sec"] = result["column"].str.extract(r"rev(\d+)s_bps")[0].astype(float)
     return result
 
 
