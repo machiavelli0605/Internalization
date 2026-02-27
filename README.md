@@ -190,9 +190,9 @@ Estimates propensity scores via logistic regression (handling mixed numeric/cate
 
 **Diagnostics returned**: strata counts and treatment proportions (before/after matching), propensity score common support overlap, PS decile distributions, nearest-neighbor distance summaries, and standardized mean differences (before/after).
 
-**4. Non-Parametric Dose-Response**
+**4. Dose-Response PSM**
 
-Bins CRBPct into quantiles, residualizes outcomes on controls, and computes adjusted means per bin with bootstrap CIs. This captures non-linear relationships.
+For each non-zero CRBPct dose bucket, constructs a binary comparison against CRBPct=0% controls. Estimates stratified propensity scores (within `EXACT_MATCH_COLS` strata), runs k:1 nearest-neighbor matching on logit(PS) with caliper and inverse-distance weighting — identical to the section C methodology. Computes the Average Treatment effect on the Treated (ATT) per dose level with bootstrap CIs. This provides a causal dose-response curve showing the benefit of each CRB dosage level relative to no internalization.
 
 ### Execution-Level Analyses
 
