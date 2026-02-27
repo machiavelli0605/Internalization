@@ -88,14 +88,19 @@ def _print_psm_summary(psm_results):
 
 
 def _print_dose_response_summary(dr_results):
-    """Print dose-response table."""
-    for outcome, dr in dr_results.items():
+    """Print dose-response PSM ATT table."""
+    att = dr_results.get("att_by_bucket")
+    if att is None or att.empty:
+        print("\n  No dose-response PSM results available.")
+        return
+    for outcome in att["outcome"].unique():
         print(f"\n  {outcome}:")
-        for _, row in dr.iterrows():
+        sub = att[att["outcome"] == outcome]
+        for _, row in sub.iterrows():
             print(
-                f"    {row['bucket']:12s}  adj_mean={row['adj_mean']:+8.3f}  "
+                f"    {row['bucket']:12s} vs 0%:  ATT={row['att']:+8.3f}  "
                 f"CI=[{row['ci_lower']:+.3f}, {row['ci_upper']:+.3f}]  "
-                f"n={row['n']:,.0f}"
+                f"n_treated={row['n_treated']:,.0f}"
             )
 
 
