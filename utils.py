@@ -303,9 +303,9 @@ def compute_weighted_smd(df, treatment_col, covariates, weights):
         # weighted means
         mt = np.average(x[t_mask], weights=w[t_mask]) if w[t_mask].sum() > 0 else np.nan
         mc = np.average(x[c_mask], weights=w[c_mask]) if w[c_mask].sum() > 0 else np.nan
-        # unweighted pooled SD for denominator (standard practice)
-        vt = np.var(x[t_mask])
-        vc = np.var(x[c_mask])
+        # unweighted pooled SD for denominator (ddof=1 to match compute_smd)
+        vt = np.var(x[t_mask], ddof=1) if t_mask.sum() > 1 else 0.0
+        vc = np.var(x[c_mask], ddof=1) if c_mask.sum() > 1 else 0.0
         pooled_sd = np.sqrt((vt + vc) / 2)
         smd = (mt - mc) / pooled_sd if pooled_sd > 0 else 0.0
         rows.append(

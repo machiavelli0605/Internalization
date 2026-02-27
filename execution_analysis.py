@@ -4,7 +4,7 @@ Execution-level analyses for internalization market impact study.
 All functions are designed to work with chunked processing for the 550M-row
 execution dataset.  Each "compute_*" function can either:
   (a) accept a pre-loaded DataFrame, or
-  (b) iterate over chunks via ``iter_execution_chunks`` and accumulate stats.
+  (b) accept chunked data and accumulate stats.
 
 Analyses:
   A. Signed markout curves (CRB vs non-CRB)
@@ -18,11 +18,7 @@ import numpy as np
 import pandas as pd
 
 from config import MARKOUT_HORIZONS_SEC
-from data_prep import (
-    _filter_auctions,
-    iter_execution_chunks,
-    load_executions_for_orders,
-)
+from data_prep import _filter_auctions
 from utils import bootstrap_mean_ci
 
 # ===================================================================

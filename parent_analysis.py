@@ -808,7 +808,7 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
             matched_c_long.assign(_dose_treated=False),
         ], ignore_index=True)
         smd_after = compute_weighted_smd(
-            matched_all, "_dose_treated", ps_covs,
+            matched_all, "_dose_treated", available_covs,
             matched_all["match_weight"].values,
         )
 

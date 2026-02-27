@@ -230,11 +230,20 @@ def main():
 
         for tor, res in parent_results.items():
             for dn, dv in res.items():
-                if isinstance(dv, dict) and all(np.isscalar(x) for x in dv.values()):
-                    df = pd.DataFrame([dv])
-                else:
-                    df = pd.DataFrame(dv)
-                df.to_csv(f"{RESULT_DIR}/{tor}_{dn}.csv", index=False)
+                try:
+                    if isinstance(dv, pd.DataFrame):
+                        df = dv
+                    elif isinstance(dv, pd.Series):
+                        df = dv.to_frame()
+                    elif isinstance(dv, dict) and all(np.isscalar(x) for x in dv.values()):
+                        df = pd.DataFrame([dv])
+                    elif isinstance(dv, list) and dv and isinstance(dv[0], dict):
+                        df = pd.DataFrame(dv)
+                    else:
+                        continue
+                    df.to_csv(f"{RESULT_DIR}/{tor}_{dn}.csv", index=False)
+                except (ValueError, TypeError):
+                    continue
         # --- Generate plots ---
         generate_parent_plots(parent_df, parent_results)
 

@@ -13,7 +13,6 @@ import pyarrow.parquet as pq
 from config import (
     CRB_BUCKET_EDGES,
     CRB_BUCKET_LABELS,
-    EXEC_CHUNK_SIZE,
     EXECUTION_DATA_PATH,
     PARENT_DATA_PATH,
     REVERSION_HORIZONS_MIN,
@@ -156,27 +155,6 @@ def derive_execution_columns(df):
     return df
 
 
-def iter_execution_chunks(
-    path=None, chunksize=None, columns=None, exclude_auctions=False, filters=None
-):
-    """Yield execution data in chunks using pyarrow row groups.
-
-    If the parquet file has row groups smaller than *chunksize*, each
-    row group is yielded as a separate DataFrame.  Otherwise we read
-    the whole file and split manually.
-
-    Yields
-    ------
-    pd.DataFrame – one chunk at a time, with derived columns applied.
-    """
-    path = path or EXECUTION_DATA_PATH
-    chunksize = chunksize or EXEC_CHUNK_SIZE
-    df = pd.read_parquet(path, engine="pyarrow", columns=columns, filters=filters)
-    if exclude_auctions:
-        df = _filter_auctions(df)
-    return df
-
-
 # ===================================================================
 # Sampling helpers
 # ===================================================================
@@ -187,13 +165,3 @@ def sample_parent_orders(df, n=500_000, seed=42):
     if len(df) <= n:
         return df
     return df.sample(n=n, random_state=seed)
-
-
-def load_executions_for_orders(path, columns=None, exclude_auctions=False):
-    """Load executions for a specific set of AlgoOrderIds.
-
-    Uses predicate pushdown where possible (parquet filters).
-    """
-    path = path or EXECUTION_DATA_PATH
-    df = iter_execution_chunks(path, columns=columns, exclude_auctions=exclude_auctions)
-    return df
