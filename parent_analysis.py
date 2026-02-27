@@ -5,8 +5,10 @@ Analyses:
   A. Descriptive statistics
   B. OLS regressions (ITT + dose-response)
   C. Propensity score matching / IPW
-  D. Non-parametric dose-response curve
+  D. Dose-response PSM
 """
+
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
@@ -27,7 +29,6 @@ from config import (
 )
 from utils import (
     bootstrap_mean_ci,
-    compute_adjusted_means,
     compute_ipw_weights,
     compute_smd,
     compute_weighted_smd,
@@ -616,36 +617,232 @@ def run_psm_analysis(
 
 
 # ===================================================================
-# D.  Non-parametric dose-response curve
+# D.  Dose-response PSM
 # ===================================================================
 
 
-def compute_dose_response(df, n_boot=500):
-    """Compute confounder-adjusted dose-response curves.
+def compute_dose_response_psm(df, caliper_mult=0.2):
+    """Dose-response via per-bucket binary PSM against 0% CRB controls.
 
-    For each outcome variable, computes adjusted means per CRBPctBucket.
+    For each non-zero CRBPct bucket, matches treated orders to CRBPct=0%
+    controls using stratified k:1 nearest-neighbor matching on logit(PS),
+    aligned with run_psm_analysis() methodology (section C).
 
     Parameters
     ----------
-    df : DataFrame
-    n_boot : int – bootstrap iterations for CIs
+    df : DataFrame – must have CRBPctBucket, PSM_COVARIATES, EXACT_MATCH_COLS
+    caliper_mult : float – caliper as multiple of PS logit std
 
     Returns
     -------
-    dict[str, DataFrame] – keyed by outcome variable
+    dict with keys:
+      - "att_by_bucket": DataFrame (bucket, outcome, att, ci_lower, ci_upper,
+         n_treated, n_matched_controls, avg_k_used)
+      - "balance_by_bucket": dict of {bucket: {"smd_before": DF, "smd_after": DF}}
+      - "diagnostics_by_bucket": dict of {bucket: {"strata_counts": DF, "overlap_summary": dict}}
     """
-    results = {}
-    for outcome in OUTCOME_VARS:
-        adj = compute_adjusted_means(
-            df,
-            outcome,
-            "CRBPctBucket",
-            CONTINUOUS_CONTROLS,
-            CATEGORICAL_FE,
-            n_boot=n_boot,
+    available_covs = [c for c in PSM_COVARIATES if c in df.columns]
+    exact_cols = [c for c in EXACT_MATCH_COLS if c in df.columns]
+    ps_covs = [c for c in available_covs if c not in exact_cols]
+    k = N_NEIGHBORS
+    EPS = 1e-8
+
+    def dist_to_weight(d, eps=EPS):
+        d = np.asarray(d, dtype=float)
+        return 1.0 / (d + eps)
+
+    # Control pool: orders with CRBPct == 0
+    controls = df[df["CRBPct"] == 0].copy()
+    # Non-zero buckets (skip the "0%" label)
+    dose_buckets = [b for b in CRB_BUCKET_LABELS if b != "0%"]
+
+    att_rows = []
+    balance_by_bucket = {}
+    diagnostics_by_bucket = {}
+
+    for bucket in dose_buckets:
+        treated = df[df["CRBPctBucket"] == bucket].copy()
+        if len(treated) < 10 or len(controls) < 10:
+            continue
+
+        # Create binary treatment column for this comparison
+        work = pd.concat([
+            treated.assign(_dose_treated=True),
+            controls.assign(_dose_treated=False),
+        ], axis=0, ignore_index=True)
+
+        needed = ps_covs + exact_cols + ["_dose_treated"]
+        work = work.dropna(subset=needed).copy()
+
+        if len(work) < 20 or work["_dose_treated"].nunique() < 2:
+            continue
+
+        # --- Stratified PS estimation (same as section C) ---
+        work["ps"] = np.nan
+        if exact_cols:
+            for _, g in work.groupby(exact_cols, dropna=False, observed=True):
+                if g["_dose_treated"].nunique() < 2 or len(g) < 10:
+                    continue
+                ps_g = estimate_propensity_scores(g, "_dose_treated", ps_covs)
+                work.loc[g.index, "ps"] = ps_g
+        else:
+            work["ps"] = estimate_propensity_scores(work, "_dose_treated", ps_covs)
+
+        work = work.dropna(subset=["ps"]).copy()
+        if len(work) < 20 or work["_dose_treated"].nunique() < 2:
+            continue
+
+        p = np.clip(work["ps"].astype(float).values, 1e-6, 1 - 1e-6)
+        work["ps_logit"] = np.log(p / (1 - p))
+
+        # --- Balance before ---
+        smd_before = compute_smd(work, "_dose_treated", available_covs)
+
+        # --- Strata diagnostics ---
+        bucket_diag = {}
+        if exact_cols:
+            g_ct = work.groupby(exact_cols, dropna=False, observed=True)["_dose_treated"]
+            sc = g_ct.agg(size="size", n_treated=lambda s: int(s.sum())).reset_index()
+            sc["n_control"] = sc["size"] - sc["n_treated"]
+            bucket_diag["strata_counts"] = sc
+            overlap = (sc["n_treated"] > 0) & (sc["n_control"] > 0)
+            bucket_diag["overlap_summary"] = {
+                "n_strata": int(len(sc)),
+                "n_overlap": int(overlap.sum()),
+                "pct_overlap": float(100 * overlap.sum() / len(sc)) if len(sc) else np.nan,
+            }
+
+        # --- k:1 NN matching within strata (same as section C) ---
+        matched_t_list = []
+        matched_c_long_list = []
+        pair_id_counter = 0
+
+        group_iter = (
+            work.groupby(exact_cols, dropna=False, observed=True)
+            if exact_cols else [(None, work)]
         )
-        results[outcome] = adj
-    return results
+
+        for _, g in group_iter:
+            treated_g = g[g["_dose_treated"]].copy().reset_index(drop=True)
+            control_g = g[~g["_dose_treated"]].copy().reset_index(drop=True)
+
+            if len(treated_g) == 0 or len(control_g) == 0:
+                continue
+
+            ps_std = g["ps_logit"].std()
+            caliper = caliper_mult * ps_std if ps_std > 0 else 0.1
+
+            indices, distances = nearest_neighbor_match(
+                treated_g["ps_logit"].values,
+                control_g["ps_logit"].values,
+                n_neighbors=k,
+                caliper=caliper,
+            )
+
+            valid_any = (indices >= 0).any(axis=1)
+            if valid_any.sum() == 0:
+                continue
+
+            mt = treated_g.loc[valid_any].copy().reset_index(drop=True)
+            nbr_idx = indices[valid_any]
+            nbr_dist = distances[valid_any]
+
+            n_mt = len(mt)
+            pair_ids = np.arange(pair_id_counter, pair_id_counter + n_mt)
+            pair_id_counter += n_mt
+            mt["pair_id"] = pair_ids
+
+            rows = []
+            for i, pid in enumerate(pair_ids):
+                for j in range(k):
+                    c_idx = int(nbr_idx[i, j])
+                    if c_idx < 0:
+                        continue
+                    d = float(nbr_dist[i, j])
+                    rows.append((pid, c_idx, d, j))
+
+            if not rows:
+                continue
+
+            c_long = pd.DataFrame(rows, columns=["pair_id", "c_idx", "distance", "nn_rank"])
+            c_long["w_raw"] = dist_to_weight(c_long["distance"].values)
+            wsum = c_long.groupby("pair_id")["w_raw"].transform("sum")
+            c_long["match_weight"] = c_long["w_raw"] / wsum
+
+            c_attached = control_g.iloc[c_long["c_idx"].values].copy().reset_index(drop=True)
+            c_attached["pair_id"] = c_long["pair_id"].values
+            c_attached["match_weight"] = c_long["match_weight"].values
+            matched_t_list.append(mt)
+            matched_c_long_list.append(c_attached)
+
+        if not matched_t_list:
+            balance_by_bucket[bucket] = {"smd_before": smd_before, "smd_after": pd.DataFrame()}
+            diagnostics_by_bucket[bucket] = bucket_diag
+            continue
+
+        matched_t = pd.concat(matched_t_list, ignore_index=True)
+        matched_c_long = pd.concat(matched_c_long_list, ignore_index=True)
+
+        # --- Balance after ---
+        matched_all = pd.concat([
+            matched_t.assign(_dose_treated=True, match_weight=1.0),
+            matched_c_long.assign(_dose_treated=False),
+        ], ignore_index=True)
+        smd_after = compute_weighted_smd(
+            matched_all, "_dose_treated", ps_covs,
+            matched_all["match_weight"].values,
+        )
+
+        balance_by_bucket[bucket] = {"smd_before": smd_before, "smd_after": smd_after}
+        diagnostics_by_bucket[bucket] = bucket_diag
+
+        # --- ATT per outcome ---
+        for outcome in OUTCOME_VARS:
+            if outcome not in matched_t.columns or outcome not in matched_c_long.columns:
+                continue
+
+            t_df = matched_t[["pair_id", outcome]].copy()
+            c_df = matched_c_long[["pair_id", outcome, "match_weight"]].copy()
+            t_df = t_df[np.isfinite(t_df[outcome].values)]
+            c_df = c_df[np.isfinite(c_df[outcome].values) & (c_df["match_weight"].values > 0)]
+
+            if t_df.empty or c_df.empty:
+                continue
+
+            c_df["w_y"] = c_df[outcome] * c_df["match_weight"]
+            ctrl_mean = c_df.groupby("pair_id").agg(
+                control_sum=("w_y", "sum"),
+                wsum=("match_weight", "sum"),
+                k_used=(outcome, "size"),
+            ).reset_index()
+            ctrl_mean["control_mean"] = ctrl_mean["control_sum"] / ctrl_mean["wsum"]
+
+            merged = t_df.merge(
+                ctrl_mean[["pair_id", "control_mean", "k_used"]],
+                on="pair_id", how="inner",
+            )
+            if merged.empty:
+                continue
+
+            diffs = merged[outcome].values - merged["control_mean"].values
+            att, ci_lo, ci_hi = bootstrap_mean_ci(diffs, n_boot=1000)
+
+            att_rows.append({
+                "bucket": bucket,
+                "outcome": outcome,
+                "att": att,
+                "ci_lower": ci_lo,
+                "ci_upper": ci_hi,
+                "n_treated": int(len(merged)),
+                "n_matched_controls": int(len(matched_c_long)),
+                "avg_k_used": float(np.nanmean(merged["k_used"].values)),
+            })
+
+    return {
+        "att_by_bucket": pd.DataFrame(att_rows),
+        "balance_by_bucket": balance_by_bucket,
+        "diagnostics_by_bucket": diagnostics_by_bucket,
+    }
 
 
 # ===================================================================
