@@ -861,8 +861,8 @@ def run_full_parent_analysis(df, cluster_col="RIC"):
     print("  [3/4] Propensity score analysis ...")
     psm = run_psm_analysis(df)
 
-    print("  [4/4] Dose-response curves ...")
-    dr = compute_dose_response(df)
+    print("  [4/4] Dose-response PSM ...")
+    dr = compute_dose_response_psm(df)
 
     return {
         "descriptive": desc,
