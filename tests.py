@@ -1018,5 +1018,92 @@ class TestPSMReturnsMatchedPairs:
             assert "match_weight" in results["matched_c_long"].columns
 
 
+class TestStratumATTDecomposition:
+    """stratum_att_decomposition computes per-stratum ATT with contribution weights."""
+
+    def test_per_stratum_att(self):
+        from diagnostics import stratum_att_decomposition
+        rng = np.random.RandomState(42)
+
+        # Two strata: VWAP and TWAP
+        matched_t = pd.DataFrame({
+            "pair_id": range(100),
+            "Strategy": ["VWAP"] * 60 + ["TWAP"] * 40,
+            "tempImpactBps": np.concatenate([
+                rng.normal(-2, 3, 60),   # VWAP: negative ATT
+                rng.normal(5, 3, 40),    # TWAP: positive ATT
+            ]),
+        })
+        matched_c_long = pd.DataFrame({
+            "pair_id": np.repeat(range(100), 3),
+            "Strategy": (["VWAP"] * 60 + ["TWAP"] * 40) * 3,
+            "tempImpactBps": rng.normal(0, 3, 300),
+            "match_weight": np.tile([0.5, 0.3, 0.2], 100),
+        })
+
+        result = stratum_att_decomposition(
+            matched_t, matched_c_long, ["Strategy"], ["tempImpactBps"]
+        )
+
+        assert not result.empty
+        assert set(result.columns) >= {"stratum", "outcome", "att", "ci_lower",
+                                        "ci_upper", "n_treated", "contribution_weight"}
+        # VWAP should have 60% contribution weight
+        vwap_row = result[(result["stratum"] == "VWAP") & (result["outcome"] == "tempImpactBps")]
+        assert abs(vwap_row["contribution_weight"].iloc[0] - 0.6) < 0.01
+        # TWAP should have 40% contribution weight
+        twap_row = result[(result["stratum"] == "TWAP") & (result["outcome"] == "tempImpactBps")]
+        assert abs(twap_row["contribution_weight"].iloc[0] - 0.4) < 0.01
+
+    def test_empty_inputs(self):
+        from diagnostics import stratum_att_decomposition
+        result = stratum_att_decomposition(
+            pd.DataFrame(), pd.DataFrame(), ["Strategy"], ["tempImpactBps"]
+        )
+        assert result.empty
+
+
+class TestLeaveOneOutATT:
+    """leave_one_out_att recomputes overall ATT excluding each stratum."""
+
+    def test_leave_one_out(self):
+        from diagnostics import leave_one_out_att
+        rng = np.random.RandomState(42)
+
+        matched_t = pd.DataFrame({
+            "pair_id": range(100),
+            "Strategy": ["VWAP"] * 60 + ["TWAP"] * 40,
+            "tempImpactBps": np.concatenate([
+                rng.normal(-5, 2, 60),
+                rng.normal(3, 2, 40),
+            ]),
+        })
+        matched_c_long = pd.DataFrame({
+            "pair_id": np.repeat(range(100), 2),
+            "Strategy": (["VWAP"] * 60 + ["TWAP"] * 40) * 2,
+            "tempImpactBps": rng.normal(0, 2, 200),
+            "match_weight": np.tile([0.6, 0.4], 100),
+        })
+
+        result = leave_one_out_att(
+            matched_t, matched_c_long, ["Strategy"], ["tempImpactBps"]
+        )
+
+        assert not result.empty
+        assert set(result.columns) >= {"excluded_stratum", "outcome", "att_without", "att_full", "delta"}
+        # Should have one row per stratum per outcome
+        assert len(result) == 2
+        # Excluding VWAP (which has negative ATT) should make att_without more positive
+        vwap_excl = result[result["excluded_stratum"] == "VWAP"]
+        assert vwap_excl["att_without"].iloc[0] > vwap_excl["att_full"].iloc[0]
+
+    def test_empty_inputs(self):
+        from diagnostics import leave_one_out_att
+        result = leave_one_out_att(
+            pd.DataFrame(), pd.DataFrame(), ["Strategy"], ["tempImpactBps"]
+        )
+        assert result.empty
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
