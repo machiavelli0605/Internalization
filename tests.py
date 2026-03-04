@@ -1365,5 +1365,37 @@ class TestPSSpecificationSensitivity:
         assert result.empty
 
 
+class TestRunPSMDiagnostics:
+    """run_psm_diagnostics orchestrates all diagnostic functions."""
+
+    def test_produces_all_keys(self, small_parent_df):
+        from parent_analysis import run_psm_analysis, run_psm_diagnostics
+
+        psm_results = run_psm_analysis(small_parent_df, treatment_col="hasCRB")
+        diag = run_psm_diagnostics(small_parent_df, psm_results)
+
+        expected_keys = [
+            "stratum_att", "leave_one_out", "auroc", "variance_ratio_before",
+            "variance_ratio_after", "smd_by_stratum", "prognostic",
+            "match_quality", "rosenbaum_bounds", "e_values",
+            "spec_sensitivity",
+        ]
+        for key in expected_keys:
+            assert key in diag, f"Missing key: {key}"
+
+    def test_handles_empty_psm(self):
+        from parent_analysis import run_psm_diagnostics
+
+        empty_psm = {
+            "matched_t": pd.DataFrame(),
+            "matched_c_long": pd.DataFrame(),
+            "propensity_scores": pd.Series(dtype=float),
+            "nn_outcomes": pd.DataFrame(),
+            "smd_before": pd.DataFrame(),
+        }
+        diag = run_psm_diagnostics(pd.DataFrame(), empty_psm)
+        assert isinstance(diag, dict)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

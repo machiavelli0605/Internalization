@@ -639,6 +639,126 @@ def run_psm_analysis(
     return results
 
 
+def run_psm_diagnostics(df, psm_results, treatment_col="hasCRB"):
+    """Run all PSM diagnostics given a completed PSM analysis.
+
+    Parameters
+    ----------
+    df : DataFrame - the full dataset (for specification sensitivity)
+    psm_results : dict - output of run_psm_analysis()
+    treatment_col : str
+
+    Returns
+    -------
+    dict with diagnostic results
+    """
+    from diagnostics import (
+        stratum_att_decomposition,
+        leave_one_out_att,
+        ps_model_auroc,
+        variance_ratio,
+        covariate_smd_by_stratum,
+        prognostic_scores,
+        match_quality_by_stratum,
+        rosenbaum_bounds,
+        e_value,
+        ps_specification_sensitivity,
+    )
+
+    matched_t = psm_results.get("matched_t", pd.DataFrame())
+    matched_c_long = psm_results.get("matched_c_long", pd.DataFrame())
+    exact_cols = [c for c in EXACT_MATCH_COLS if c in df.columns]
+    available_covs = [c for c in PSM_COVARIATES if c in df.columns]
+
+    diag = {}
+
+    # 1. Stratum ATT decomposition
+    diag["stratum_att"] = stratum_att_decomposition(
+        matched_t, matched_c_long, exact_cols, OUTCOME_VARS,
+    )
+
+    # 2. Leave-one-out
+    diag["leave_one_out"] = leave_one_out_att(
+        matched_t, matched_c_long, exact_cols, OUTCOME_VARS,
+    )
+
+    # 3. AUROC
+    ps = psm_results.get("propensity_scores", pd.Series(dtype=float))
+    if not ps.empty and treatment_col in df.columns:
+        treat_vals = df.loc[ps.index, treatment_col].astype(int).values if ps.index.isin(df.index).all() else np.array([])
+        if len(treat_vals) == len(ps):
+            diag["auroc"] = ps_model_auroc(ps.values, treat_vals)
+        else:
+            diag["auroc"] = {"auroc": np.nan, "n_treated": 0, "n_control": 0}
+    else:
+        diag["auroc"] = {"auroc": np.nan, "n_treated": 0, "n_control": 0}
+
+    # 4. Variance ratio (before and after)
+    needed = available_covs + [treatment_col]
+    work = df.dropna(subset=[c for c in needed if c in df.columns])
+    diag["variance_ratio_before"] = variance_ratio(work, treatment_col, available_covs) if not work.empty else pd.DataFrame()
+
+    if not matched_t.empty and not matched_c_long.empty:
+        matched_all = pd.concat([
+            matched_t.assign(**{treatment_col: True, "match_weight": 1.0}),
+            matched_c_long.assign(**{treatment_col: False}),
+        ], ignore_index=True)
+        diag["variance_ratio_after"] = variance_ratio(
+            matched_all, treatment_col, available_covs,
+            weights=matched_all["match_weight"].values,
+        )
+    else:
+        diag["variance_ratio_after"] = pd.DataFrame()
+
+    # 5. SMD by stratum
+    diag["smd_by_stratum"] = covariate_smd_by_stratum(
+        work, treatment_col, available_covs, exact_cols,
+    ) if not work.empty else pd.DataFrame()
+
+    # 6. Prognostic scores
+    diag["prognostic"] = prognostic_scores(
+        work, treatment_col, available_covs, "tempImpactBps",
+    ) if not work.empty and "tempImpactBps" in work.columns else pd.DataFrame()
+
+    # 10. Match quality by stratum
+    diag["match_quality"] = match_quality_by_stratum(
+        matched_t, matched_c_long, exact_cols,
+    )
+
+    # 8. Rosenbaum bounds (on tempImpactBps pair diffs)
+    if not matched_t.empty and not matched_c_long.empty and "tempImpactBps" in matched_t.columns:
+        from diagnostics import _compute_pair_diffs
+        pair_diffs = _compute_pair_diffs(matched_t, matched_c_long, "tempImpactBps")
+        if not pair_diffs.empty:
+            diag["rosenbaum_bounds"] = rosenbaum_bounds(pair_diffs["diff"].values)
+        else:
+            diag["rosenbaum_bounds"] = pd.DataFrame()
+    else:
+        diag["rosenbaum_bounds"] = pd.DataFrame()
+
+    # 9. E-values (for each outcome)
+    nn_outcomes = psm_results.get("nn_outcomes", pd.DataFrame())
+    e_vals = {}
+    if not nn_outcomes.empty:
+        for _, row in nn_outcomes.iterrows():
+            att_val = row["diff"]
+            se_approx = (row["diff_ci_upper"] - row["diff_ci_lower"]) / (2 * 1.96)
+            if se_approx > 0:
+                e_vals[row["outcome"]] = e_value(att_val, se_approx)
+    diag["e_values"] = e_vals
+
+    # 7. PS specification sensitivity
+    if not df.empty and treatment_col in df.columns and "tempImpactBps" in df.columns:
+        diag["spec_sensitivity"] = ps_specification_sensitivity(
+            df, treatment_col, available_covs, exact_cols,
+            "tempImpactBps", caliper_mult=0.2, n_neighbors=N_NEIGHBORS,
+        )
+    else:
+        diag["spec_sensitivity"] = pd.DataFrame()
+
+    return diag
+
+
 # ===================================================================
 # D.  Dose-response PSM
 # ===================================================================
@@ -875,21 +995,25 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
 
 def run_full_parent_analysis(df, cluster_col="RIC"):
     """Execute all parent-level analyses and return combined results dict."""
-    print("  [1/4] Descriptive analysis ...")
+    print("  [1/5] Descriptive analysis ...")
     desc = descriptive_summary(df)
 
-    print("  [2/4] OLS regressions ...")
+    print("  [2/5] OLS regressions ...")
     reg = run_all_regressions(df, cluster_col=cluster_col)
 
-    print("  [3/4] Propensity score analysis ...")
+    print("  [3/5] Propensity score analysis ...")
     psm = run_psm_analysis(df)
 
-    print("  [4/4] Dose-response PSM ...")
+    print("  [3b/5] PSM diagnostics ...")
+    psm_diag = run_psm_diagnostics(df, psm)
+
+    print("  [4/5] Dose-response PSM ...")
     dr = compute_dose_response_psm(df)
 
     return {
         "descriptive": desc,
         "regression": reg,
         "psm": psm,
+        "psm_diagnostics": psm_diag,
         "dose_response": dr,
     }
