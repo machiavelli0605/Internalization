@@ -1105,5 +1105,69 @@ class TestLeaveOneOutATT:
         assert result.empty
 
 
+class TestPSModelAUROC:
+    """ps_model_auroc computes AUROC of propensity scores."""
+
+    def test_perfect_separation(self):
+        from diagnostics import ps_model_auroc
+        ps = np.array([0.9, 0.95, 0.85, 0.1, 0.05, 0.15])
+        treatment = np.array([1, 1, 1, 0, 0, 0])
+        result = ps_model_auroc(ps, treatment)
+        assert result["auroc"] == 1.0
+        assert result["n_treated"] == 3
+        assert result["n_control"] == 3
+
+    def test_random_ps(self):
+        from diagnostics import ps_model_auroc
+        rng = np.random.RandomState(0)
+        ps = rng.uniform(0, 1, 200)
+        treatment = rng.choice([0, 1], 200)
+        result = ps_model_auroc(ps, treatment)
+        assert 0.35 < result["auroc"] < 0.65
+
+    def test_empty_input(self):
+        from diagnostics import ps_model_auroc
+        result = ps_model_auroc(np.array([]), np.array([]))
+        assert np.isnan(result["auroc"])
+
+
+class TestVarianceRatio:
+    """variance_ratio computes Var(treated)/Var(control) per covariate."""
+
+    def test_equal_variances(self):
+        from diagnostics import variance_ratio
+        rng = np.random.RandomState(0)
+        n = 1000
+        df = pd.DataFrame({
+            "treat": [True] * 500 + [False] * 500,
+            "x": rng.normal(0, 5, n),
+        })
+        result = variance_ratio(df, "treat", ["x"])
+        assert not result.empty
+        assert 0.8 < result.iloc[0]["vr"] < 1.2
+
+    def test_unequal_variances(self):
+        from diagnostics import variance_ratio
+        rng = np.random.RandomState(0)
+        df = pd.DataFrame({
+            "treat": [True] * 200 + [False] * 200,
+            "x": np.concatenate([rng.normal(0, 10, 200), rng.normal(0, 2, 200)]),
+        })
+        result = variance_ratio(df, "treat", ["x"])
+        assert result.iloc[0]["vr"] > 5.0
+
+    def test_with_weights(self):
+        from diagnostics import variance_ratio
+        rng = np.random.RandomState(0)
+        n = 200
+        df = pd.DataFrame({
+            "treat": [True] * 100 + [False] * 100,
+            "x": rng.normal(0, 5, n),
+        })
+        weights = np.ones(n)
+        result = variance_ratio(df, "treat", ["x"], weights=weights)
+        assert not result.empty
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -166,3 +166,79 @@ def leave_one_out_att(matched_t, matched_c_long, exact_cols, outcome_vars):
             })
 
     return pd.DataFrame(rows)
+
+
+# ===================================================================
+# 3. PS model AUROC
+# ===================================================================
+
+
+def ps_model_auroc(ps, treatment):
+    """Compute AUROC of propensity scores vs actual treatment assignment.
+
+    Returns dict with auroc, n_treated, n_control.
+    """
+    ps = np.asarray(ps, dtype=float)
+    treatment = np.asarray(treatment, dtype=int)
+
+    valid = np.isfinite(ps)
+    ps = ps[valid]
+    treatment = treatment[valid]
+
+    n_t = int((treatment == 1).sum())
+    n_c = int((treatment == 0).sum())
+
+    if n_t == 0 or n_c == 0 or len(ps) == 0:
+        return {"auroc": np.nan, "n_treated": n_t, "n_control": n_c}
+
+    from sklearn.metrics import roc_auc_score
+    auroc = float(roc_auc_score(treatment, ps))
+    return {"auroc": auroc, "n_treated": n_t, "n_control": n_c}
+
+
+# ===================================================================
+# 4. Variance ratio
+# ===================================================================
+
+
+def variance_ratio(df, treatment_col, covariates, weights=None):
+    """Compute Var(treated)/Var(control) per covariate.
+
+    Target range: 0.5 to 2.0.  Outside this range indicates distributional
+    imbalance not captured by SMD.
+
+    Returns DataFrame with columns: covariate, vr
+    """
+    t_mask = df[treatment_col].astype(bool).values
+    c_mask = ~t_mask
+
+    rows = []
+    for cov in covariates:
+        if cov not in df.columns:
+            continue
+        x = df[cov].values.astype(float)
+
+        if weights is not None:
+            w = np.asarray(weights, dtype=float)
+
+            def _wvar(vals, wts):
+                wts = wts[np.isfinite(vals)]
+                vals = vals[np.isfinite(vals)]
+                if len(vals) < 2 or wts.sum() == 0:
+                    return np.nan
+                wm = np.average(vals, weights=wts)
+                return np.average((vals - wm) ** 2, weights=wts)
+
+            var_t = _wvar(x[t_mask], w[t_mask])
+            var_c = _wvar(x[c_mask], w[c_mask])
+        else:
+            xt = x[t_mask]
+            xc = x[c_mask]
+            var_t = np.nanvar(xt, ddof=1) if np.isfinite(xt).sum() > 1 else np.nan
+            var_c = np.nanvar(xc, ddof=1) if np.isfinite(xc).sum() > 1 else np.nan
+
+        vr = var_t / var_c if var_c and var_c > 0 else np.nan
+
+        rows.append({"covariate": cov, "vr": vr})
+
+    return pd.DataFrame(rows)
