@@ -387,6 +387,8 @@ def run_psm_analysis(
         "ps_logit_quantiles_before": {},
         "nn_distance_ps_before": {},
         "nn_distance_ps_logit_before": {},
+        "matched_t": pd.DataFrame(),
+        "matched_c_long": pd.DataFrame(),
     }
 
     if len(work) < 20 or work[treatment_col].astype(bool).nunique() < 2:
@@ -554,6 +556,8 @@ def run_psm_analysis(
     if matched_t_list:
         matched_t = pd.concat(matched_t_list, ignore_index=True)
         matched_c_long = pd.concat(matched_c_long_list, ignore_index=True)
+        results["matched_t"] = matched_t
+        results["matched_c_long"] = matched_c_long
         matched_all_long = pd.concat([matched_t.assign(**{treatment_col: True, "match_weight": 1.0}),
                                       matched_c_long.assign(**{treatment_col: False})], ignore_index=True)
 

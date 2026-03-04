@@ -55,6 +55,8 @@ def small_parent_df():
         "InvertedQty": np.zeros(n),
         "ConditionalQty": np.zeros(n),
         "VenueTypeUnknownQty": np.zeros(n),
+        "ELPQty": np.zeros(n),
+        "FeeFeeQty": np.zeros(n),
         "FilledQty": np.full(n, 1000.0),
         "StartQty": np.full(n, 1000.0),
         "LimitPx": amid * 1.05,
@@ -995,6 +997,25 @@ class TestParentPathResolution:
         # load_parent_data with exclude_auctions should use no_auction_path
         result = load_parent_data(str(base_path), exclude_auctions=True)
         assert len(result) == n
+
+
+class TestPSMReturnsMatchedPairs:
+    """run_psm_analysis must return matched_t and matched_c_long DataFrames."""
+
+    def test_matched_pairs_returned(self, small_parent_df):
+        from parent_analysis import run_psm_analysis
+
+        results = run_psm_analysis(small_parent_df, treatment_col="hasCRB")
+        assert "matched_t" in results
+        assert "matched_c_long" in results
+        if not results["nn_outcomes"].empty:
+            assert isinstance(results["matched_t"], pd.DataFrame)
+            assert not results["matched_t"].empty
+            assert isinstance(results["matched_c_long"], pd.DataFrame)
+            assert not results["matched_c_long"].empty
+            assert "pair_id" in results["matched_t"].columns
+            assert "pair_id" in results["matched_c_long"].columns
+            assert "match_weight" in results["matched_c_long"].columns
 
 
 if __name__ == "__main__":
