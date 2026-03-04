@@ -87,6 +87,87 @@ def _print_psm_summary(psm_results):
                 )
 
 
+def _print_psm_diagnostics(psm_diag):
+    """Print PSM diagnostic summary."""
+    # AUROC
+    auroc = psm_diag.get("auroc", {})
+    if auroc.get("auroc") is not None and not np.isnan(auroc.get("auroc", np.nan)):
+        print(f"\n  PS Model AUROC: {auroc['auroc']:.3f}  "
+              f"(n_treated={auroc['n_treated']:,}, n_control={auroc['n_control']:,})")
+
+    # Stratum ATT
+    stratum_att = psm_diag.get("stratum_att", pd.DataFrame())
+    if not stratum_att.empty:
+        print("\n  Per-Stratum ATT Decomposition:")
+        for outcome in stratum_att["outcome"].unique():
+            print(f"    {outcome}:")
+            sub = stratum_att[stratum_att["outcome"] == outcome]
+            for _, row in sub.iterrows():
+                print(f"      {row['stratum']:12s}  ATT={row['att']:+8.3f}  "
+                      f"CI=[{row['ci_lower']:+.3f}, {row['ci_upper']:+.3f}]  "
+                      f"n={row['n_treated']:,}  weight={row['contribution_weight']:.1%}")
+
+    # Leave-one-out
+    loo = psm_diag.get("leave_one_out", pd.DataFrame())
+    if not loo.empty:
+        print("\n  Leave-One-Out Stratum Sensitivity:")
+        for outcome in loo["outcome"].unique():
+            print(f"    {outcome}:")
+            sub = loo[loo["outcome"] == outcome]
+            for _, row in sub.iterrows():
+                direction = "+" if row["delta"] > 0 else ""
+                print(f"      Exclude {row['excluded_stratum']:12s}  "
+                      f"ATT={row['att_without']:+8.3f}  "
+                      f"(full={row['att_full']:+.3f}, delta={direction}{row['delta']:.3f})")
+
+    # Variance ratio
+    vr_before = psm_diag.get("variance_ratio_before", pd.DataFrame())
+    if not vr_before.empty:
+        print("\n  Variance Ratios (before matching):")
+        for _, row in vr_before.iterrows():
+            flag = " ***" if (row["vr"] < 0.5 or row["vr"] > 2.0) else ""
+            print(f"    {row['covariate']:25s}  VR={row['vr']:.3f}{flag}")
+
+    # Prognostic scores
+    prog = psm_diag.get("prognostic", pd.DataFrame())
+    if not prog.empty:
+        print("\n  Prognostic Covariate Importance (predicting tempImpactBps in controls):")
+        for _, row in prog.iterrows():
+            sig = ""
+            if row["pvalue"] < 0.001: sig = "***"
+            elif row["pvalue"] < 0.01: sig = "**"
+            elif row["pvalue"] < 0.05: sig = "*"
+            print(f"    {row['covariate']:25s}  coef={row['coef']:+8.3f}  "
+                  f"SE={row['se']:.3f}  p={row['pvalue']:.4f}{sig}")
+
+    # E-values
+    e_vals = psm_diag.get("e_values", {})
+    if e_vals:
+        print("\n  E-values (unmeasured confounding sensitivity):")
+        for outcome, ev in e_vals.items():
+            print(f"    {outcome:25s}  E-value={ev['e_value_point']:.2f}  "
+                  f"(CI bound: {ev['e_value_ci']:.2f})")
+
+    # Rosenbaum bounds
+    rb = psm_diag.get("rosenbaum_bounds", pd.DataFrame())
+    if not rb.empty:
+        crossings = rb[rb["p_upper"] >= 0.05]
+        if not crossings.empty:
+            gamma_break = crossings["gamma"].iloc[0]
+            print(f"\n  Rosenbaum Bounds: result insensitive up to Gamma={gamma_break:.1f}")
+        else:
+            print(f"\n  Rosenbaum Bounds: result robust at all tested Gamma values")
+
+    # Spec sensitivity
+    spec = psm_diag.get("spec_sensitivity", pd.DataFrame())
+    if not spec.empty:
+        print("\n  PS Specification Sensitivity (tempImpactBps):")
+        for _, row in spec.iterrows():
+            print(f"    {row['spec_name']:20s}  ATT={row['att']:+8.3f}  "
+                  f"CI=[{row['ci_lower']:+.3f}, {row['ci_upper']:+.3f}]  "
+                  f"AUROC={row.get('auroc', np.nan):.3f}")
+
+
 def _print_dose_response_summary(dr_results):
     """Print dose-response PSM ATT table."""
     att = dr_results.get("att_by_bucket")
@@ -222,6 +303,13 @@ def main():
         print("PROPENSITY SCORE RESULTS")
         print("-" * 60)
         _print_psm_summary(parent_results["psm"])
+
+        psm_diag = parent_results.get("psm_diagnostics", {})
+        if psm_diag:
+            print("\n" + "-" * 60)
+            print("PSM DIAGNOSTICS")
+            print("-" * 60)
+            _print_psm_diagnostics(psm_diag)
 
         print("\n" + "-" * 60)
         print("DOSE-RESPONSE RESULTS")

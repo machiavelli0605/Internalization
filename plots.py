@@ -629,6 +629,238 @@ def plot_markout_distribution(exec_df, horizons_to_plot=None):
 # Master plot functions
 # =====================================================================
 
+# =====================================================================
+# P8.  PS overlap density
+# =====================================================================
+
+def plot_ps_overlap_density(df, psm_results, treatment_col="hasCRB",
+                             exact_cols=None):
+    """KDE of propensity scores for treated vs control, overall and per stratum."""
+    ps = psm_results.get("propensity_scores", pd.Series(dtype=float))
+    if ps.empty or df.empty:
+        return
+
+    if "ps" not in df.columns:
+        if len(ps) == len(df):
+            df = df.copy()
+            df["ps"] = ps.values
+        else:
+            return
+
+    panels = [("Overall", df)]
+    if exact_cols:
+        for key, grp in df.groupby(exact_cols, observed=True):
+            label = key if isinstance(key, str) else str(key)
+            panels.append((label, grp))
+
+    n = len(panels)
+    ncols = min(3, n)
+    nrows = (n + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 4 * nrows))
+    axes = np.atleast_1d(axes).flatten()
+
+    for idx, (title, sub) in enumerate(panels):
+        ax = axes[idx]
+        for tval, label, color in [(True, "Treated", COLOR_TREATED),
+                                    (False, "Control", COLOR_CONTROL)]:
+            vals = sub.loc[sub[treatment_col].astype(bool) == tval, "ps"].dropna()
+            if len(vals) < 2:
+                continue
+            sns.kdeplot(vals, ax=ax, color=color, label=label, linewidth=1.5)
+        ax.set_title(title, fontsize=10)
+        ax.set_xlabel("Propensity Score")
+        if idx == 0:
+            ax.legend()
+
+    for idx in range(n, len(axes)):
+        axes[idx].set_visible(False)
+
+    fig.suptitle("P8: Propensity Score Overlap Density", fontsize=14)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    _savefig(fig, "P8_ps_overlap_density")
+
+
+# =====================================================================
+# P9.  Per-stratum ATT waterfall
+# =====================================================================
+
+def plot_stratum_att_waterfall(diagnostics):
+    """Horizontal bar chart: per-stratum ATT with contribution weights."""
+    att_df = diagnostics.get("stratum_att", pd.DataFrame())
+    if att_df.empty:
+        return
+
+    # Filter to tempImpactBps
+    sub = att_df[att_df["outcome"] == "tempImpactBps"].copy()
+    if sub.empty:
+        sub = att_df[att_df["outcome"] == att_df["outcome"].iloc[0]].copy()
+    if sub.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(10, max(4, len(sub) * 0.8)))
+    y_pos = np.arange(len(sub))
+    colors = [COLOR_TREATED if v >= 0 else COLOR_CONTROL for v in sub["att"]]
+
+    ax.barh(y_pos, sub["att"], color=colors, alpha=0.8, edgecolor="white")
+    ax.errorbar(sub["att"], y_pos,
+                xerr=[sub["att"] - sub["ci_lower"], sub["ci_upper"] - sub["att"]],
+                fmt="none", capsize=4, color="black", linewidth=1)
+    ax.set_yticks(y_pos)
+    labels = [f'{s} (w={w:.0%}, n={n:,})'
+              for s, w, n in zip(sub["stratum"], sub["contribution_weight"], sub["n_treated"])]
+    ax.set_yticklabels(labels)
+    ax.axvline(0, color="grey", linestyle="--", alpha=0.6)
+    ax.set_xlabel("ATT (bps)")
+    ax.set_title("P9: Per-Stratum ATT Decomposition — tempImpactBps")
+
+    fig.tight_layout()
+    _savefig(fig, "P9_stratum_att_waterfall")
+
+
+# =====================================================================
+# P10.  Leave-one-out sensitivity
+# =====================================================================
+
+def plot_leave_one_out(diagnostics):
+    """Forest plot: ATT when each stratum is excluded."""
+    loo = diagnostics.get("leave_one_out", pd.DataFrame())
+    if loo.empty:
+        return
+
+    sub = loo[loo["outcome"] == "tempImpactBps"].copy()
+    if sub.empty:
+        sub = loo[loo["outcome"] == loo["outcome"].iloc[0]].copy()
+    if sub.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(8, max(4, len(sub) * 0.6 + 1)))
+    y_pos = np.arange(len(sub) + 1)
+
+    # Full ATT as first row
+    att_full = sub["att_full"].iloc[0]
+    ax.scatter([att_full], [0], marker="D", s=80, color="black", zorder=5, label="Full ATT")
+
+    for i, (_, row) in enumerate(sub.iterrows()):
+        color = COLOR_TREATED if row["att_without"] > att_full else COLOR_CONTROL
+        ax.scatter([row["att_without"]], [i + 1], marker="o", s=60, color=color, zorder=5)
+
+    ax.axvline(0, color="grey", linestyle="--", alpha=0.6)
+    ax.axvline(att_full, color="black", linestyle=":", alpha=0.4)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(["Full (all strata)"] + list(sub["excluded_stratum"]))
+    ax.set_xlabel("ATT (bps)")
+    ax.set_title("P10: Leave-One-Out Stratum Sensitivity — tempImpactBps")
+    ax.invert_yaxis()
+
+    fig.tight_layout()
+    _savefig(fig, "P10_leave_one_out")
+
+
+# =====================================================================
+# P11.  Prognostic covariate importance
+# =====================================================================
+
+def plot_prognostic_importance(diagnostics):
+    """Bar chart of prognostic coefficients (outcome ~ covariates on controls)."""
+    prog = diagnostics.get("prognostic", pd.DataFrame())
+    if prog.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(8, max(4, len(prog) * 0.6)))
+    y_pos = np.arange(len(prog))
+    sorted_prog = prog.reindex(prog["coef"].abs().sort_values().index)
+    colors = [COLOR_TREATED if c >= 0 else COLOR_CONTROL for c in sorted_prog["coef"]]
+
+    ax.barh(y_pos, sorted_prog["coef"], color=colors, alpha=0.8)
+    ax.errorbar(sorted_prog["coef"], y_pos,
+                xerr=1.96 * sorted_prog["se"],
+                fmt="none", capsize=3, color="black", linewidth=0.8)
+    ax.set_yticks(y_pos)
+    labels = []
+    for _, row in sorted_prog.iterrows():
+        stars = "***" if row["pvalue"] < 0.001 else ("**" if row["pvalue"] < 0.01 else ("*" if row["pvalue"] < 0.05 else ""))
+        labels.append(f'{row["covariate"]} {stars}')
+    ax.set_yticklabels(labels)
+    ax.axvline(0, color="grey", linestyle="--", alpha=0.6)
+    ax.set_xlabel("Coefficient (predicting tempImpactBps in controls)")
+    r2 = sorted_prog["r_squared"].iloc[0] if "r_squared" in sorted_prog.columns else None
+    title = "P11: Prognostic Covariate Importance"
+    if r2 is not None:
+        title += f" (R²={r2:.3f})"
+    ax.set_title(title)
+
+    fig.tight_layout()
+    _savefig(fig, "P11_prognostic_importance")
+
+
+# =====================================================================
+# P12.  Rosenbaum bounds
+# =====================================================================
+
+def plot_rosenbaum_bounds(diagnostics):
+    """Line plot of Gamma vs p-value with significance threshold."""
+    rb = diagnostics.get("rosenbaum_bounds", pd.DataFrame())
+    if rb.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(rb["gamma"], rb["p_upper"], "o-", color=COLOR_CRB, linewidth=2, markersize=6)
+    ax.axhline(0.05, color=COLOR_CONTROL, linestyle="--", alpha=0.7, label="p = 0.05")
+    ax.set_xlabel("Gamma (sensitivity parameter)")
+    ax.set_ylabel("Upper-bound p-value")
+    ax.set_title("P12: Rosenbaum Bounds — Sensitivity to Unmeasured Confounding")
+    ax.legend()
+    ax.set_ylim(bottom=0)
+
+    # Annotate the breakpoint
+    crossings = rb[rb["p_upper"] >= 0.05]
+    if not crossings.empty:
+        gamma_break = crossings["gamma"].iloc[0]
+        ax.annotate(f'Breaks at Γ={gamma_break:.1f}',
+                    (gamma_break, 0.05), textcoords="offset points",
+                    xytext=(10, 10), fontsize=9, color=COLOR_CONTROL)
+
+    fig.tight_layout()
+    _savefig(fig, "P12_rosenbaum_bounds")
+
+
+# =====================================================================
+# P13.  PS specification sensitivity
+# =====================================================================
+
+def plot_spec_sensitivity(diagnostics):
+    """Forest plot of ATT across different PS model specifications."""
+    spec = diagnostics.get("spec_sensitivity", pd.DataFrame())
+    if spec.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(10, max(4, len(spec) * 0.6)))
+    y_pos = np.arange(len(spec))
+
+    ax.errorbar(
+        spec["att"], y_pos,
+        xerr=[spec["att"] - spec["ci_lower"], spec["ci_upper"] - spec["att"]],
+        fmt="o", capsize=4, color=COLOR_CRB, markersize=7, linewidth=1.5,
+    )
+    ax.axvline(0, color="grey", linestyle="--", alpha=0.6)
+
+    # Highlight the base model
+    base_idx = spec.index[spec["spec_name"] == "base"]
+    if len(base_idx) > 0:
+        bi = spec.index.get_loc(base_idx[0])
+        ax.scatter([spec.iloc[bi]["att"]], [bi], marker="D", s=100,
+                   color="black", zorder=5)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(spec["spec_name"])
+    ax.set_xlabel("ATT — tempImpactBps (bps)")
+    ax.set_title("P13: PS Specification Sensitivity")
+    ax.invert_yaxis()
+
+    fig.tight_layout()
+    _savefig(fig, "P13_spec_sensitivity")
+
+
 def generate_parent_plots(parent_df, parent_results):
     """Generate all parent-level plots."""
     print("\n  Generating parent-level plots ...")
@@ -662,6 +894,30 @@ def generate_parent_plots(parent_df, parent_results):
 
     print("    P7: Impact by CRBPct bucket")
     plot_impact_by_bucket(parent_df)
+
+    # New diagnostic plots
+    psm_diag = parent_results.get("psm_diagnostics", {})
+
+    print("    P8: PS overlap density")
+    if psm:
+        plot_ps_overlap_density(parent_df, psm, treatment_col="hasCRB",
+                                exact_cols=["Strategy"] if "Strategy" in parent_df.columns else [])
+
+    if psm_diag:
+        print("    P9: Stratum ATT waterfall")
+        plot_stratum_att_waterfall(psm_diag)
+
+        print("    P10: Leave-one-out sensitivity")
+        plot_leave_one_out(psm_diag)
+
+        print("    P11: Prognostic importance")
+        plot_prognostic_importance(psm_diag)
+
+        print("    P12: Rosenbaum bounds")
+        plot_rosenbaum_bounds(psm_diag)
+
+        print("    P13: PS specification sensitivity")
+        plot_spec_sensitivity(psm_diag)
 
 
 def generate_execution_plots(exec_results, exec_df_sample=None):

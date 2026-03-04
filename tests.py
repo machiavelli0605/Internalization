@@ -55,6 +55,8 @@ def small_parent_df():
         "InvertedQty": np.zeros(n),
         "ConditionalQty": np.zeros(n),
         "VenueTypeUnknownQty": np.zeros(n),
+        "ELPQty": np.zeros(n),
+        "FeeFeeQty": np.zeros(n),
         "FilledQty": np.full(n, 1000.0),
         "StartQty": np.full(n, 1000.0),
         "LimitPx": amid * 1.05,
@@ -737,6 +739,9 @@ class TestBug16_IsIntTypeNormalization:
             "LitQty": np.full(n, 300.0),
             "InvertedQty": np.zeros(n),
             "ConditionalQty": np.zeros(n),
+            "VenueTypeUnknownQty": np.zeros(n),
+            "ELPQty": np.zeros(n),
+            "FeeFeeQty": np.zeros(n),
             "FilledQty": np.full(n, 1000.0),
             "adv": rng.uniform(1e5, 1e7, n),
             "isInt": np.array([1] * 30 + [0] * 20),  # int, not bool
@@ -874,6 +879,7 @@ class TestExecutionAuctionFiltering:
             "AlgoOrderId": [1, 1, 2, 2],
             "isInt": [True, False, True, False],
             "LastLiquidity": ["ADDED", "CLOSE_AUCTION", "REMOVED", "OPENING_AUCTION"],
+            "isAuction": [False, True, False, True],
             "rev1s_bps": [1.0, 2.0, 3.0, 4.0],
             "rev5s_bps": [1.0, 2.0, 3.0, 4.0],
         })
@@ -892,13 +898,15 @@ class TestComputeWithExcludeAuctions:
     def _make_exec_df(self):
         rng = np.random.RandomState(0)
         n = 200
+        last_liq = rng.choice(
+            ["ADDED", "REMOVED", "CLOSE_AUCTION"], n,
+            p=[0.4, 0.4, 0.2]
+        )
         df = pd.DataFrame({
             "AlgoOrderId": rng.choice(range(50), n),
             "isInt": rng.choice([True, False], n),
-            "LastLiquidity": rng.choice(
-                ["ADDED", "REMOVED", "CLOSE_AUCTION"], n,
-                p=[0.4, 0.4, 0.2]
-            ),
+            "LastLiquidity": last_liq,
+            "isAuction": [ll == "CLOSE_AUCTION" for ll in last_liq],
             "spread": rng.uniform(1, 20, n),
             "rev1s_bps": rng.normal(0, 2, n),
             "rev5s_bps": rng.normal(0, 3, n),
@@ -982,6 +990,9 @@ class TestParentPathResolution:
             "LitQty": np.full(n, 300.0),
             "InvertedQty": np.zeros(n),
             "ConditionalQty": np.zeros(n),
+            "VenueTypeUnknownQty": np.zeros(n),
+            "ELPQty": np.zeros(n),
+            "FeeFeeQty": np.zeros(n),
             "FilledQty": np.full(n, 1000.0),
             "adv": rng.uniform(1e5, 1e7, n),
             "isInt": [True] * 5 + [False] * 5,
@@ -995,6 +1006,530 @@ class TestParentPathResolution:
         # load_parent_data with exclude_auctions should use no_auction_path
         result = load_parent_data(str(base_path), exclude_auctions=True)
         assert len(result) == n
+
+
+class TestPSMReturnsMatchedPairs:
+    """run_psm_analysis must return matched_t and matched_c_long DataFrames."""
+
+    def test_matched_pairs_returned(self, small_parent_df):
+        from parent_analysis import run_psm_analysis
+
+        results = run_psm_analysis(small_parent_df, treatment_col="hasCRB")
+        assert "matched_t" in results
+        assert "matched_c_long" in results
+        if not results["nn_outcomes"].empty:
+            assert isinstance(results["matched_t"], pd.DataFrame)
+            assert not results["matched_t"].empty
+            assert isinstance(results["matched_c_long"], pd.DataFrame)
+            assert not results["matched_c_long"].empty
+            assert "pair_id" in results["matched_t"].columns
+            assert "pair_id" in results["matched_c_long"].columns
+            assert "match_weight" in results["matched_c_long"].columns
+
+
+class TestStratumATTDecomposition:
+    """stratum_att_decomposition computes per-stratum ATT with contribution weights."""
+
+    def test_per_stratum_att(self):
+        from diagnostics import stratum_att_decomposition
+        rng = np.random.RandomState(42)
+
+        # Two strata: VWAP and TWAP
+        matched_t = pd.DataFrame({
+            "pair_id": range(100),
+            "Strategy": ["VWAP"] * 60 + ["TWAP"] * 40,
+            "tempImpactBps": np.concatenate([
+                rng.normal(-2, 3, 60),   # VWAP: negative ATT
+                rng.normal(5, 3, 40),    # TWAP: positive ATT
+            ]),
+        })
+        matched_c_long = pd.DataFrame({
+            "pair_id": np.repeat(range(100), 3),
+            "Strategy": (["VWAP"] * 60 + ["TWAP"] * 40) * 3,
+            "tempImpactBps": rng.normal(0, 3, 300),
+            "match_weight": np.tile([0.5, 0.3, 0.2], 100),
+        })
+
+        result = stratum_att_decomposition(
+            matched_t, matched_c_long, ["Strategy"], ["tempImpactBps"]
+        )
+
+        assert not result.empty
+        assert set(result.columns) >= {"stratum", "outcome", "att", "ci_lower",
+                                        "ci_upper", "n_treated", "contribution_weight"}
+        # VWAP should have 60% contribution weight
+        vwap_row = result[(result["stratum"] == "VWAP") & (result["outcome"] == "tempImpactBps")]
+        assert abs(vwap_row["contribution_weight"].iloc[0] - 0.6) < 0.01
+        # TWAP should have 40% contribution weight
+        twap_row = result[(result["stratum"] == "TWAP") & (result["outcome"] == "tempImpactBps")]
+        assert abs(twap_row["contribution_weight"].iloc[0] - 0.4) < 0.01
+
+    def test_empty_inputs(self):
+        from diagnostics import stratum_att_decomposition
+        result = stratum_att_decomposition(
+            pd.DataFrame(), pd.DataFrame(), ["Strategy"], ["tempImpactBps"]
+        )
+        assert result.empty
+
+
+class TestLeaveOneOutATT:
+    """leave_one_out_att recomputes overall ATT excluding each stratum."""
+
+    def test_leave_one_out(self):
+        from diagnostics import leave_one_out_att
+        rng = np.random.RandomState(42)
+
+        matched_t = pd.DataFrame({
+            "pair_id": range(100),
+            "Strategy": ["VWAP"] * 60 + ["TWAP"] * 40,
+            "tempImpactBps": np.concatenate([
+                rng.normal(-5, 2, 60),
+                rng.normal(3, 2, 40),
+            ]),
+        })
+        matched_c_long = pd.DataFrame({
+            "pair_id": np.repeat(range(100), 2),
+            "Strategy": (["VWAP"] * 60 + ["TWAP"] * 40) * 2,
+            "tempImpactBps": rng.normal(0, 2, 200),
+            "match_weight": np.tile([0.6, 0.4], 100),
+        })
+
+        result = leave_one_out_att(
+            matched_t, matched_c_long, ["Strategy"], ["tempImpactBps"]
+        )
+
+        assert not result.empty
+        assert set(result.columns) >= {"excluded_stratum", "outcome", "att_without", "att_full", "delta"}
+        # Should have one row per stratum per outcome
+        assert len(result) == 2
+        # Excluding VWAP (which has negative ATT) should make att_without more positive
+        vwap_excl = result[result["excluded_stratum"] == "VWAP"]
+        assert vwap_excl["att_without"].iloc[0] > vwap_excl["att_full"].iloc[0]
+
+    def test_empty_inputs(self):
+        from diagnostics import leave_one_out_att
+        result = leave_one_out_att(
+            pd.DataFrame(), pd.DataFrame(), ["Strategy"], ["tempImpactBps"]
+        )
+        assert result.empty
+
+
+class TestPSModelAUROC:
+    """ps_model_auroc computes AUROC of propensity scores."""
+
+    def test_perfect_separation(self):
+        from diagnostics import ps_model_auroc
+        ps = np.array([0.9, 0.95, 0.85, 0.1, 0.05, 0.15])
+        treatment = np.array([1, 1, 1, 0, 0, 0])
+        result = ps_model_auroc(ps, treatment)
+        assert result["auroc"] == 1.0
+        assert result["n_treated"] == 3
+        assert result["n_control"] == 3
+
+    def test_random_ps(self):
+        from diagnostics import ps_model_auroc
+        rng = np.random.RandomState(0)
+        ps = rng.uniform(0, 1, 200)
+        treatment = rng.choice([0, 1], 200)
+        result = ps_model_auroc(ps, treatment)
+        assert 0.35 < result["auroc"] < 0.65
+
+    def test_empty_input(self):
+        from diagnostics import ps_model_auroc
+        result = ps_model_auroc(np.array([]), np.array([]))
+        assert np.isnan(result["auroc"])
+
+
+class TestVarianceRatio:
+    """variance_ratio computes Var(treated)/Var(control) per covariate."""
+
+    def test_equal_variances(self):
+        from diagnostics import variance_ratio
+        rng = np.random.RandomState(0)
+        n = 1000
+        df = pd.DataFrame({
+            "treat": [True] * 500 + [False] * 500,
+            "x": rng.normal(0, 5, n),
+        })
+        result = variance_ratio(df, "treat", ["x"])
+        assert not result.empty
+        assert 0.8 < result.iloc[0]["vr"] < 1.2
+
+    def test_unequal_variances(self):
+        from diagnostics import variance_ratio
+        rng = np.random.RandomState(0)
+        df = pd.DataFrame({
+            "treat": [True] * 200 + [False] * 200,
+            "x": np.concatenate([rng.normal(0, 10, 200), rng.normal(0, 2, 200)]),
+        })
+        result = variance_ratio(df, "treat", ["x"])
+        assert result.iloc[0]["vr"] > 5.0
+
+    def test_with_weights(self):
+        from diagnostics import variance_ratio
+        rng = np.random.RandomState(0)
+        n = 200
+        df = pd.DataFrame({
+            "treat": [True] * 100 + [False] * 100,
+            "x": rng.normal(0, 5, n),
+        })
+        weights = np.ones(n)
+        result = variance_ratio(df, "treat", ["x"], weights=weights)
+        assert not result.empty
+
+
+class TestCovariateSMDByStratum:
+    """covariate_smd_by_stratum computes SMD within each stratum."""
+
+    def test_per_stratum_smd(self):
+        from diagnostics import covariate_smd_by_stratum
+        rng = np.random.RandomState(0)
+        n = 400
+        df = pd.DataFrame({
+            "treat": [True] * 200 + [False] * 200,
+            "Strategy": (["VWAP"] * 100 + ["TWAP"] * 100) * 2,
+            "x": np.concatenate([
+                rng.normal(10, 2, 100),  # VWAP treated: high
+                rng.normal(5, 2, 100),   # TWAP treated: medium
+                rng.normal(5, 2, 100),   # VWAP control: medium
+                rng.normal(5, 2, 100),   # TWAP control: medium
+            ]),
+        })
+        result = covariate_smd_by_stratum(df, "treat", ["x"], ["Strategy"])
+        assert not result.empty
+        assert "stratum" in result.columns
+        assert "covariate" in result.columns
+        assert "smd" in result.columns
+        # VWAP should have much higher SMD than TWAP
+        vwap_smd = abs(result[result["stratum"] == "VWAP"]["smd"].iloc[0])
+        twap_smd = abs(result[result["stratum"] == "TWAP"]["smd"].iloc[0])
+        assert vwap_smd > twap_smd
+
+    def test_empty_inputs(self):
+        from diagnostics import covariate_smd_by_stratum
+        result = covariate_smd_by_stratum(pd.DataFrame(), "treat", ["x"], ["Strategy"])
+        assert result.empty
+
+
+class TestPrognosticScores:
+    """prognostic_scores fits outcome ~ covariates on control group."""
+
+    def test_identifies_prognostic_covariate(self):
+        from diagnostics import prognostic_scores
+        rng = np.random.RandomState(0)
+        n = 400
+        x_strong = rng.normal(0, 1, n)
+        x_noise = rng.normal(0, 1, n)
+        outcome = 3 * x_strong + rng.normal(0, 0.5, n)
+        df = pd.DataFrame({
+            "treat": [True] * 200 + [False] * 200,
+            "x_strong": x_strong,
+            "x_noise": x_noise,
+            "tempImpactBps": outcome,
+        })
+        result = prognostic_scores(df, "treat", ["x_strong", "x_noise"], "tempImpactBps")
+        assert not result.empty
+        assert "covariate" in result.columns
+        assert "coef" in result.columns
+        assert "r_squared" in result.columns
+        # x_strong should have a larger absolute coefficient
+        strong_coef = abs(result[result["covariate"] == "x_strong"]["coef"].iloc[0])
+        noise_coef = abs(result[result["covariate"] == "x_noise"]["coef"].iloc[0])
+        assert strong_coef > noise_coef
+
+    def test_no_controls(self):
+        from diagnostics import prognostic_scores
+        df = pd.DataFrame({
+            "treat": [True, True, True],
+            "x": [1.0, 2.0, 3.0],
+            "y": [4.0, 5.0, 6.0],
+        })
+        result = prognostic_scores(df, "treat", ["x"], "y")
+        assert result.empty
+
+
+class TestMatchQualityByStratum:
+    """match_quality_by_stratum reports distance and effective k per stratum."""
+
+    def test_basic_quality(self):
+        from diagnostics import match_quality_by_stratum
+        matched_t = pd.DataFrame({
+            "pair_id": range(6),
+            "Strategy": ["VWAP"] * 3 + ["TWAP"] * 3,
+        })
+        matched_c_long = pd.DataFrame({
+            "pair_id": [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5],
+            "Strategy": ["VWAP"] * 6 + ["TWAP"] * 6,
+            "distance": [0.01, 0.02, 0.03, 0.04, 0.01, 0.05,
+                         0.1, 0.2, 0.15, 0.25, 0.05, 0.3],
+            "match_weight": [0.6, 0.4] * 6,
+        })
+        result = match_quality_by_stratum(matched_t, matched_c_long, ["Strategy"])
+        assert not result.empty
+        assert set(result.columns) >= {"stratum", "mean_dist", "median_dist",
+                                        "max_dist", "mean_k", "min_k"}
+        # TWAP has larger distances
+        vwap_dist = result[result["stratum"] == "VWAP"]["mean_dist"].iloc[0]
+        twap_dist = result[result["stratum"] == "TWAP"]["mean_dist"].iloc[0]
+        assert twap_dist > vwap_dist
+
+    def test_empty_inputs(self):
+        from diagnostics import match_quality_by_stratum
+        result = match_quality_by_stratum(
+            pd.DataFrame(), pd.DataFrame(), ["Strategy"]
+        )
+        assert result.empty
+
+
+class TestRosenbaumBounds:
+    """rosenbaum_bounds computes sensitivity to unmeasured confounding."""
+
+    def test_strong_signal(self):
+        from diagnostics import rosenbaum_bounds
+        diffs = np.array([3.0, 4.0, 5.0, 6.0, 7.0, 3.5, 4.5, 5.5, 6.5, 7.5,
+                          2.0, 8.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
+        result = rosenbaum_bounds(diffs)
+        assert not result.empty
+        assert "gamma" in result.columns
+        assert "p_upper" in result.columns
+        p_at_1 = result[result["gamma"] == 1.0]["p_upper"].iloc[0]
+        assert p_at_1 < 0.05
+
+    def test_weak_signal(self):
+        from diagnostics import rosenbaum_bounds
+        rng = np.random.RandomState(0)
+        diffs = rng.normal(0.1, 5, 50)
+        result = rosenbaum_bounds(diffs)
+        assert not result.empty
+
+    def test_empty_diffs(self):
+        from diagnostics import rosenbaum_bounds
+        result = rosenbaum_bounds(np.array([]))
+        assert result.empty
+
+
+class TestEValue:
+    """e_value computes minimum confounding strength to explain away result."""
+
+    def test_positive_effect(self):
+        from diagnostics import e_value
+        result = e_value(att=5.0, se=1.0)
+        assert "e_value_point" in result
+        assert "e_value_ci" in result
+        assert result["e_value_point"] > 1.0
+
+    def test_null_effect(self):
+        from diagnostics import e_value
+        result = e_value(att=0.0, se=1.0)
+        assert result["e_value_point"] == 1.0
+
+    def test_negative_effect(self):
+        from diagnostics import e_value
+        result = e_value(att=-3.0, se=1.0)
+        assert result["e_value_point"] > 1.0
+
+
+class TestPSSpecificationSensitivity:
+    """ps_specification_sensitivity tests ATT under different PS model specs."""
+
+    def test_produces_multiple_specs(self):
+        from diagnostics import ps_specification_sensitivity
+        rng = np.random.RandomState(42)
+        n = 600
+        df = pd.DataFrame({
+            "hasCRB": [True] * 300 + [False] * 300,
+            "Strategy": rng.choice(["VWAP", "TWAP"], n),
+            "log_qtyOverADV": rng.uniform(0.01, 0.1, n),
+            "PcpRate": rng.uniform(0.05, 0.2, n),
+            "log_adv": rng.uniform(12, 17, n),
+            "duration_mins": rng.uniform(5, 60, n),
+            "start_mins": rng.uniform(570, 960, n),
+            "tempImpactBps": rng.normal(0, 5, n),
+        })
+        for oc in OUTCOME_VARS:
+            if oc not in df.columns:
+                df[oc] = rng.normal(0, 5, n)
+
+        result = ps_specification_sensitivity(
+            df, "hasCRB",
+            ["log_qtyOverADV", "PcpRate", "log_adv", "duration_mins", "start_mins"],
+            ["Strategy"], "tempImpactBps",
+            caliper_mult=0.2, n_neighbors=5,
+        )
+        assert not result.empty
+        assert "spec_name" in result.columns
+        assert "att" in result.columns
+        assert len(result) >= 7
+
+    def test_too_few_rows(self):
+        from diagnostics import ps_specification_sensitivity
+        df = pd.DataFrame({
+            "hasCRB": [True, False],
+            "x": [1.0, 2.0],
+            "tempImpactBps": [3.0, 4.0],
+        })
+        result = ps_specification_sensitivity(
+            df, "hasCRB", ["x"], [], "tempImpactBps", 0.2, 1
+        )
+        assert result.empty
+
+
+class TestRunPSMDiagnostics:
+    """run_psm_diagnostics orchestrates all diagnostic functions."""
+
+    def test_produces_all_keys(self, small_parent_df):
+        from parent_analysis import run_psm_analysis, run_psm_diagnostics
+
+        psm_results = run_psm_analysis(small_parent_df, treatment_col="hasCRB")
+        diag = run_psm_diagnostics(small_parent_df, psm_results)
+
+        expected_keys = [
+            "stratum_att", "leave_one_out", "auroc", "variance_ratio_before",
+            "variance_ratio_after", "smd_by_stratum", "prognostic",
+            "match_quality", "rosenbaum_bounds", "e_values",
+            "spec_sensitivity",
+        ]
+        for key in expected_keys:
+            assert key in diag, f"Missing key: {key}"
+
+    def test_handles_empty_psm(self):
+        from parent_analysis import run_psm_diagnostics
+
+        empty_psm = {
+            "matched_t": pd.DataFrame(),
+            "matched_c_long": pd.DataFrame(),
+            "propensity_scores": pd.Series(dtype=float),
+            "nn_outcomes": pd.DataFrame(),
+            "smd_before": pd.DataFrame(),
+        }
+        diag = run_psm_diagnostics(pd.DataFrame(), empty_psm)
+        assert isinstance(diag, dict)
+
+
+class TestDiagnosticPlots:
+    """New diagnostic plots P8-P13 should not crash on valid or empty data."""
+
+    def test_p8_ps_overlap_density(self):
+        from plots import plot_ps_overlap_density
+        rng = np.random.RandomState(0)
+        n = 200
+        psm_results = {
+            "propensity_scores": pd.Series(rng.uniform(0.1, 0.9, n)),
+        }
+        df = pd.DataFrame({
+            "hasCRB": [True] * 100 + [False] * 100,
+            "Strategy": rng.choice(["VWAP", "TWAP"], n),
+            "ps": rng.uniform(0.1, 0.9, n),
+        })
+        plot_ps_overlap_density(df, psm_results, treatment_col="hasCRB",
+                                exact_cols=["Strategy"])
+        plt.close("all")
+
+    def test_p8_empty(self):
+        from plots import plot_ps_overlap_density
+        plot_ps_overlap_density(pd.DataFrame(), {"propensity_scores": pd.Series(dtype=float)},
+                                treatment_col="hasCRB", exact_cols=[])
+        plt.close("all")
+
+    def test_p9_stratum_att_waterfall(self):
+        from plots import plot_stratum_att_waterfall
+        diag = {
+            "stratum_att": pd.DataFrame([
+                {"stratum": "VWAP", "outcome": "tempImpactBps", "att": -2.0,
+                 "ci_lower": -4.0, "ci_upper": 0.0, "n_treated": 60,
+                 "contribution_weight": 0.6},
+                {"stratum": "TWAP", "outcome": "tempImpactBps", "att": 3.0,
+                 "ci_lower": 1.0, "ci_upper": 5.0, "n_treated": 40,
+                 "contribution_weight": 0.4},
+            ]),
+        }
+        plot_stratum_att_waterfall(diag)
+        plt.close("all")
+
+    def test_p10_leave_one_out(self):
+        from plots import plot_leave_one_out
+        diag = {
+            "leave_one_out": pd.DataFrame([
+                {"excluded_stratum": "VWAP", "outcome": "tempImpactBps",
+                 "att_without": 3.0, "att_full": -1.0, "delta": 4.0},
+                {"excluded_stratum": "TWAP", "outcome": "tempImpactBps",
+                 "att_without": -3.0, "att_full": -1.0, "delta": -2.0},
+            ]),
+        }
+        plot_leave_one_out(diag)
+        plt.close("all")
+
+    def test_p11_prognostic_importance(self):
+        from plots import plot_prognostic_importance
+        diag = {
+            "prognostic": pd.DataFrame([
+                {"covariate": "log_qtyOverADV", "coef": 3.5, "se": 0.5, "pvalue": 0.001},
+                {"covariate": "PcpRate", "coef": -1.2, "se": 0.8, "pvalue": 0.13},
+            ]),
+        }
+        plot_prognostic_importance(diag)
+        plt.close("all")
+
+    def test_p12_rosenbaum_bounds(self):
+        from plots import plot_rosenbaum_bounds
+        diag = {
+            "rosenbaum_bounds": pd.DataFrame([
+                {"gamma": 1.0, "p_upper": 0.001},
+                {"gamma": 1.5, "p_upper": 0.04},
+                {"gamma": 2.0, "p_upper": 0.15},
+            ]),
+        }
+        plot_rosenbaum_bounds(diag)
+        plt.close("all")
+
+    def test_p13_spec_sensitivity(self):
+        from plots import plot_spec_sensitivity
+        diag = {
+            "spec_sensitivity": pd.DataFrame([
+                {"spec_name": "base", "att": -1.0, "ci_lower": -3.0, "ci_upper": 1.0},
+                {"spec_name": "drop_PcpRate", "att": 0.5, "ci_lower": -1.5, "ci_upper": 2.5},
+            ]),
+        }
+        plot_spec_sensitivity(diag)
+        plt.close("all")
+
+    def test_all_empty_diagnostics(self):
+        from plots import (plot_ps_overlap_density, plot_stratum_att_waterfall,
+                           plot_leave_one_out, plot_prognostic_importance,
+                           plot_rosenbaum_bounds, plot_spec_sensitivity)
+        empty_diag = {
+            "stratum_att": pd.DataFrame(),
+            "leave_one_out": pd.DataFrame(),
+            "prognostic": pd.DataFrame(),
+            "rosenbaum_bounds": pd.DataFrame(),
+            "spec_sensitivity": pd.DataFrame(),
+        }
+        plot_stratum_att_waterfall(empty_diag)
+        plot_leave_one_out(empty_diag)
+        plot_prognostic_importance(empty_diag)
+        plot_rosenbaum_bounds(empty_diag)
+        plot_spec_sensitivity(empty_diag)
+        plt.close("all")
+
+
+class TestFullPipelineWithDiagnostics:
+    """End-to-end: run_full_parent_analysis returns diagnostics."""
+
+    def test_full_pipeline(self, small_parent_df):
+        from parent_analysis import run_full_parent_analysis
+
+        results = run_full_parent_analysis(small_parent_df)
+        assert "psm_diagnostics" in results
+
+        diag = results["psm_diagnostics"]
+        assert "stratum_att" in diag
+        assert "leave_one_out" in diag
+        assert "auroc" in diag
+        assert "variance_ratio_before" in diag
+        assert "prognostic" in diag
+        assert "rosenbaum_bounds" in diag
+        assert "e_values" in diag
+        assert "spec_sensitivity" in diag
 
 
 if __name__ == "__main__":
