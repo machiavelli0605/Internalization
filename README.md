@@ -24,7 +24,8 @@ python run_analysis.py --parent-data path/to/parents.parquet --exec-data path/to
 | `data_prep.py` | Data loading, column derivation, execution data reader |
 | `parent_analysis.py` | Parent-level analyses: descriptive, OLS regression, PSM, dose-response |
 | `execution_analysis.py` | Execution-level analyses: markout curves, within-order comparison |
-| `plots.py` | All 15 visualization functions |
+| `diagnostics.py` | PSM diagnostic functions: stratum ATT, leave-one-out, AUROC, Rosenbaum bounds, E-value, spec sensitivity |
+| `plots.py` | All 21 visualization functions (P1-P13 parent, E1-E6 execution) |
 | `run_analysis.py` | Main CLI orchestration script |
 | `test_pipeline.py` | End-to-end smoke test using synthetic data |
 
@@ -188,7 +189,7 @@ Estimates propensity scores via logistic regression (handling mixed numeric/cate
 
 **Stratified estimation**: When `EXACT_MATCH_COLS` is configured, propensity scores are estimated independently within each stratum, preventing cross-stratum confounding.
 
-**Diagnostics returned**: strata counts and treatment proportions (before/after matching), propensity score common support overlap, PS decile distributions, nearest-neighbor distance summaries, and standardized mean differences (before/after).
+**Diagnostics returned**: strata counts and treatment proportions (before/after matching), propensity score common support overlap, PS decile distributions, nearest-neighbor distance summaries, and standardized mean differences (before/after). Extended diagnostics include stratum ATT decomposition, leave-one-out sensitivity, Rosenbaum bounds, E-values, prognostic covariate importance, and PS specification sensitivity — see [`docs/PSM_DIAGNOSTICS.md`](docs/PSM_DIAGNOSTICS.md) for a detailed investigation guide.
 
 **4. Dose-Response PSM**
 
