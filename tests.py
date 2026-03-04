@@ -739,6 +739,9 @@ class TestBug16_IsIntTypeNormalization:
             "LitQty": np.full(n, 300.0),
             "InvertedQty": np.zeros(n),
             "ConditionalQty": np.zeros(n),
+            "VenueTypeUnknownQty": np.zeros(n),
+            "ELPQty": np.zeros(n),
+            "FeeFeeQty": np.zeros(n),
             "FilledQty": np.full(n, 1000.0),
             "adv": rng.uniform(1e5, 1e7, n),
             "isInt": np.array([1] * 30 + [0] * 20),  # int, not bool
@@ -876,6 +879,7 @@ class TestExecutionAuctionFiltering:
             "AlgoOrderId": [1, 1, 2, 2],
             "isInt": [True, False, True, False],
             "LastLiquidity": ["ADDED", "CLOSE_AUCTION", "REMOVED", "OPENING_AUCTION"],
+            "isAuction": [False, True, False, True],
             "rev1s_bps": [1.0, 2.0, 3.0, 4.0],
             "rev5s_bps": [1.0, 2.0, 3.0, 4.0],
         })
@@ -894,13 +898,15 @@ class TestComputeWithExcludeAuctions:
     def _make_exec_df(self):
         rng = np.random.RandomState(0)
         n = 200
+        last_liq = rng.choice(
+            ["ADDED", "REMOVED", "CLOSE_AUCTION"], n,
+            p=[0.4, 0.4, 0.2]
+        )
         df = pd.DataFrame({
             "AlgoOrderId": rng.choice(range(50), n),
             "isInt": rng.choice([True, False], n),
-            "LastLiquidity": rng.choice(
-                ["ADDED", "REMOVED", "CLOSE_AUCTION"], n,
-                p=[0.4, 0.4, 0.2]
-            ),
+            "LastLiquidity": last_liq,
+            "isAuction": [ll == "CLOSE_AUCTION" for ll in last_liq],
             "spread": rng.uniform(1, 20, n),
             "rev1s_bps": rng.normal(0, 2, n),
             "rev5s_bps": rng.normal(0, 3, n),
@@ -984,6 +990,9 @@ class TestParentPathResolution:
             "LitQty": np.full(n, 300.0),
             "InvertedQty": np.zeros(n),
             "ConditionalQty": np.zeros(n),
+            "VenueTypeUnknownQty": np.zeros(n),
+            "ELPQty": np.zeros(n),
+            "FeeFeeQty": np.zeros(n),
             "FilledQty": np.full(n, 1000.0),
             "adv": rng.uniform(1e5, 1e7, n),
             "isInt": [True] * 5 + [False] * 5,

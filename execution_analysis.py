@@ -110,13 +110,12 @@ class MarkoutAccumulator:
 # ===================================================================
 
 
-def compute_signed_markout_curves(df, horizons=None):
+def compute_signed_markout_curves(df, horizons=None, exclude_auctions=False):
     """Compute mean signed markouts (rev{x}s_bps) by isInt group.
 
     Parameters
     ----------
-    exec_path : path – parquet file (chunked reading)
-    df : DataFrame – if provided, use directly instead of chunked reading
+    df : DataFrame – execution data
     horizons : list[int] – markout horizons in seconds
     exclude_auctions : bool – if True, exclude auction fills
 
@@ -124,6 +123,8 @@ def compute_signed_markout_curves(df, horizons=None):
     -------
     DataFrame with columns: group, column, mean, se, ci_lower, ci_upper, n
     """
+    if exclude_auctions:
+        df = _filter_auctions(df)
     cols = _rev_cols(horizons=horizons)
     acc = MarkoutAccumulator("isInt", cols)
     acc.add_chunk(df)
@@ -140,8 +141,10 @@ def compute_signed_markout_curves(df, horizons=None):
 # ===================================================================
 
 
-def compute_abs_markout_curves(df, horizons=None):
+def compute_abs_markout_curves(df, horizons=None, exclude_auctions=False):
     """Compute mean |rev{x}s_bps| by isInt group."""
+    if exclude_auctions:
+        df = _filter_auctions(df)
     cols = _abs_rev_cols(horizons=horizons)
     acc = MarkoutAccumulator("isInt", cols)
     acc.add_chunk(df)
@@ -158,11 +161,13 @@ def compute_abs_markout_curves(df, horizons=None):
 # ===================================================================
 
 
-def compute_markout_by_inttype(df, horizons=None):
+def compute_markout_by_inttype(df, horizons=None, exclude_auctions=False):
     """Compute mean signed markouts grouped by intType.
 
     Non-CRB fills are labelled "non-CRB" in the intType column.
     """
+    if exclude_auctions:
+        df = _filter_auctions(df)
     cols = _rev_cols(horizons=horizons)
     acc = MarkoutAccumulator("_inttype_label", cols)
 
@@ -322,7 +327,7 @@ def compute_within_order_markouts(
 # ===================================================================
 
 
-def compute_markout_by_spread(df, horizons=None, n_buckets=5):
+def compute_markout_by_spread(df, horizons=None, n_buckets=5, exclude_auctions=False):
     """Compute markout curves sliced by spread quintile.
 
     Returns
@@ -370,6 +375,8 @@ def compute_markout_by_spread(df, horizons=None, n_buckets=5):
         edges = np.nanpercentile(vals, np.linspace(0, 100, n_buckets + 1))
         return np.unique(edges)
 
+    if exclude_auctions:
+        df = _filter_auctions(df)
     if "spread" not in df.columns:
         return empty_result
     edges = _compute_edges(df["spread"])
