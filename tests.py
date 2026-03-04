@@ -1272,5 +1272,53 @@ class TestMatchQualityByStratum:
         assert result.empty
 
 
+class TestRosenbaumBounds:
+    """rosenbaum_bounds computes sensitivity to unmeasured confounding."""
+
+    def test_strong_signal(self):
+        from diagnostics import rosenbaum_bounds
+        diffs = np.array([3.0, 4.0, 5.0, 6.0, 7.0, 3.5, 4.5, 5.5, 6.5, 7.5,
+                          2.0, 8.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
+        result = rosenbaum_bounds(diffs)
+        assert not result.empty
+        assert "gamma" in result.columns
+        assert "p_upper" in result.columns
+        p_at_1 = result[result["gamma"] == 1.0]["p_upper"].iloc[0]
+        assert p_at_1 < 0.05
+
+    def test_weak_signal(self):
+        from diagnostics import rosenbaum_bounds
+        rng = np.random.RandomState(0)
+        diffs = rng.normal(0.1, 5, 50)
+        result = rosenbaum_bounds(diffs)
+        assert not result.empty
+
+    def test_empty_diffs(self):
+        from diagnostics import rosenbaum_bounds
+        result = rosenbaum_bounds(np.array([]))
+        assert result.empty
+
+
+class TestEValue:
+    """e_value computes minimum confounding strength to explain away result."""
+
+    def test_positive_effect(self):
+        from diagnostics import e_value
+        result = e_value(att=5.0, se=1.0)
+        assert "e_value_point" in result
+        assert "e_value_ci" in result
+        assert result["e_value_point"] > 1.0
+
+    def test_null_effect(self):
+        from diagnostics import e_value
+        result = e_value(att=0.0, se=1.0)
+        assert result["e_value_point"] == 1.0
+
+    def test_negative_effect(self):
+        from diagnostics import e_value
+        result = e_value(att=-3.0, se=1.0)
+        assert result["e_value_point"] > 1.0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

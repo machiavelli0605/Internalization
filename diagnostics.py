@@ -378,3 +378,115 @@ def match_quality_by_stratum(matched_t, matched_c_long, exact_cols):
         })
 
     return pd.DataFrame(rows)
+
+
+# ===================================================================
+# 8. Rosenbaum bounds
+# ===================================================================
+
+
+def rosenbaum_bounds(diffs, gamma_range=None):
+    """Sensitivity analysis for matched pair differences.
+
+    For each Gamma (odds of differential treatment assignment due to
+    unmeasured confounding), computes the upper-bound p-value of a
+    Wilcoxon signed-rank test.
+
+    Parameters
+    ----------
+    diffs : array-like - matched pair outcome differences
+    gamma_range : list of floats - Gamma values to test (default 1.0 to 3.0)
+
+    Returns DataFrame with columns: gamma, p_upper
+    """
+    diffs = np.asarray(diffs, dtype=float)
+    diffs = diffs[np.isfinite(diffs)]
+    if len(diffs) == 0:
+        return pd.DataFrame()
+
+    if gamma_range is None:
+        gamma_range = [1.0, 1.1, 1.2, 1.3, 1.5, 1.75, 2.0, 2.5, 3.0]
+
+    from scipy.stats import wilcoxon
+
+    # Absolute ranks
+    abs_diffs = np.abs(diffs)
+    # Remove zeros for ranking
+    nonzero = abs_diffs > 0
+    if nonzero.sum() < 2:
+        return pd.DataFrame()
+
+    diffs_nz = diffs[nonzero]
+    abs_nz = abs_diffs[nonzero]
+    n = len(diffs_nz)
+
+    # Rank the absolute differences
+    ranks = np.argsort(np.argsort(abs_nz)) + 1.0  # simple ranking
+
+    rows = []
+    for gamma in gamma_range:
+        if gamma == 1.0:
+            # Standard Wilcoxon signed-rank test
+            try:
+                _, p = wilcoxon(diffs_nz, alternative="two-sided")
+            except ValueError:
+                p = np.nan
+            rows.append({"gamma": gamma, "p_upper": float(p)})
+        else:
+            # Under Gamma, the probability that a positive diff is
+            # actually positive ranges from 1/(1+Gamma) to Gamma/(1+Gamma).
+            # T+ = sum of ranks where diff > 0
+            positive = diffs_nz > 0
+            T_plus = float(ranks[positive].sum())
+            T_total = float(ranks.sum())
+
+            # Under Gamma, expected T+ under null:
+            p_gamma = gamma / (1 + gamma)
+            E_T = T_total * p_gamma
+            V_T = (ranks ** 2).sum() * gamma / (1 + gamma) ** 2
+            sd_T = np.sqrt(V_T) if V_T > 0 else 1e-10
+
+            # Normal approximation
+            from scipy.stats import norm
+            z = (T_plus - E_T) / sd_T
+            p_upper = float(2 * norm.sf(abs(z)))  # two-sided
+            rows.append({"gamma": gamma, "p_upper": p_upper})
+
+    return pd.DataFrame(rows)
+
+
+# ===================================================================
+# 9. E-value
+# ===================================================================
+
+
+def e_value(att, se):
+    """Compute E-value: minimum confounding strength to explain away the result.
+
+    Uses the VanderWeele & Ding (2017) approximation for continuous outcomes.
+
+    Parameters
+    ----------
+    att : float - average treatment effect
+    se : float - standard error of the ATT
+
+    Returns dict with e_value_point, e_value_ci
+    """
+    def _e_from_rr(rr):
+        rr = abs(rr)
+        if rr <= 1.0:
+            return 1.0
+        return rr + np.sqrt(rr * (rr - 1))
+
+    # Approximate RR using exp(0.91 * |att/se|)
+    z_point = abs(att) / se if se > 0 else 0.0
+    rr_point = np.exp(0.91 * z_point) if z_point > 0 else 1.0
+
+    # CI bound: use the CI-closest-to-null
+    z_ci = max(0, z_point - 1.96)
+    rr_ci = np.exp(0.91 * z_ci) if z_ci > 0 else 1.0
+
+    return {
+        "e_value_point": _e_from_rr(rr_point),
+        "e_value_ci": _e_from_rr(rr_ci),
+    }
