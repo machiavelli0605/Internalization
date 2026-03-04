@@ -242,3 +242,87 @@ def variance_ratio(df, treatment_col, covariates, weights=None):
         rows.append({"covariate": cov, "vr": vr})
 
     return pd.DataFrame(rows)
+
+
+# ===================================================================
+# 5. Covariate SMD by stratum
+# ===================================================================
+
+
+def covariate_smd_by_stratum(df, treatment_col, covariates, exact_cols):
+    """Compute SMD within each stratum separately.
+
+    Returns DataFrame with columns: stratum, covariate, smd
+    """
+    if df.empty or not exact_cols:
+        return pd.DataFrame()
+
+    group_col = exact_cols[0] if len(exact_cols) == 1 else exact_cols
+    rows = []
+    for stratum_key, grp in df.groupby(group_col, observed=True):
+        stratum_label = stratum_key if isinstance(stratum_key, str) else str(stratum_key)
+        treated = grp[grp[treatment_col].astype(bool)]
+        control = grp[~grp[treatment_col].astype(bool)]
+
+        if len(treated) < 2 or len(control) < 2:
+            continue
+
+        for cov in covariates:
+            if cov not in grp.columns:
+                continue
+            mt = treated[cov].mean()
+            mc = control[cov].mean()
+            vt = treated[cov].var()
+            vc = control[cov].var()
+            pooled_sd = np.sqrt((vt + vc) / 2)
+            smd = (mt - mc) / pooled_sd if pooled_sd > 0 else 0.0
+            rows.append({"stratum": stratum_label, "covariate": cov, "smd": smd})
+
+    return pd.DataFrame(rows)
+
+
+# ===================================================================
+# 6. Prognostic scores
+# ===================================================================
+
+
+def prognostic_scores(df, treatment_col, covariates, outcome):
+    """Fit OLS of outcome ~ covariates on the control group only.
+
+    Identifies which covariates most strongly predict the outcome,
+    guiding confounder selection.
+
+    Returns DataFrame with columns: covariate, coef, se, pvalue, r_squared
+    """
+    controls = df[~df[treatment_col].astype(bool)].copy()
+    available = [c for c in covariates if c in controls.columns]
+
+    if len(controls) < len(available) + 2 or outcome not in controls.columns:
+        return pd.DataFrame()
+
+    work = controls[available + [outcome]].dropna()
+    if len(work) < len(available) + 2:
+        return pd.DataFrame()
+
+    import statsmodels.api as sm
+    X = sm.add_constant(work[available].astype(float))
+    y = work[outcome].astype(float)
+
+    try:
+        model = sm.OLS(y, X).fit()
+    except Exception:
+        return pd.DataFrame()
+
+    rows = []
+    for cov in available:
+        if cov not in model.params.index:
+            continue
+        rows.append({
+            "covariate": cov,
+            "coef": float(model.params[cov]),
+            "se": float(model.bse[cov]),
+            "pvalue": float(model.pvalues[cov]),
+            "r_squared": float(model.rsquared),
+        })
+
+    return pd.DataFrame(rows)

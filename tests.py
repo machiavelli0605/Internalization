@@ -1169,5 +1169,75 @@ class TestVarianceRatio:
         assert not result.empty
 
 
+class TestCovariateSMDByStratum:
+    """covariate_smd_by_stratum computes SMD within each stratum."""
+
+    def test_per_stratum_smd(self):
+        from diagnostics import covariate_smd_by_stratum
+        rng = np.random.RandomState(0)
+        n = 400
+        df = pd.DataFrame({
+            "treat": [True] * 200 + [False] * 200,
+            "Strategy": (["VWAP"] * 100 + ["TWAP"] * 100) * 2,
+            "x": np.concatenate([
+                rng.normal(10, 2, 100),  # VWAP treated: high
+                rng.normal(5, 2, 100),   # TWAP treated: medium
+                rng.normal(5, 2, 100),   # VWAP control: medium
+                rng.normal(5, 2, 100),   # TWAP control: medium
+            ]),
+        })
+        result = covariate_smd_by_stratum(df, "treat", ["x"], ["Strategy"])
+        assert not result.empty
+        assert "stratum" in result.columns
+        assert "covariate" in result.columns
+        assert "smd" in result.columns
+        # VWAP should have much higher SMD than TWAP
+        vwap_smd = abs(result[result["stratum"] == "VWAP"]["smd"].iloc[0])
+        twap_smd = abs(result[result["stratum"] == "TWAP"]["smd"].iloc[0])
+        assert vwap_smd > twap_smd
+
+    def test_empty_inputs(self):
+        from diagnostics import covariate_smd_by_stratum
+        result = covariate_smd_by_stratum(pd.DataFrame(), "treat", ["x"], ["Strategy"])
+        assert result.empty
+
+
+class TestPrognosticScores:
+    """prognostic_scores fits outcome ~ covariates on control group."""
+
+    def test_identifies_prognostic_covariate(self):
+        from diagnostics import prognostic_scores
+        rng = np.random.RandomState(0)
+        n = 400
+        x_strong = rng.normal(0, 1, n)
+        x_noise = rng.normal(0, 1, n)
+        outcome = 3 * x_strong + rng.normal(0, 0.5, n)
+        df = pd.DataFrame({
+            "treat": [True] * 200 + [False] * 200,
+            "x_strong": x_strong,
+            "x_noise": x_noise,
+            "tempImpactBps": outcome,
+        })
+        result = prognostic_scores(df, "treat", ["x_strong", "x_noise"], "tempImpactBps")
+        assert not result.empty
+        assert "covariate" in result.columns
+        assert "coef" in result.columns
+        assert "r_squared" in result.columns
+        # x_strong should have a larger absolute coefficient
+        strong_coef = abs(result[result["covariate"] == "x_strong"]["coef"].iloc[0])
+        noise_coef = abs(result[result["covariate"] == "x_noise"]["coef"].iloc[0])
+        assert strong_coef > noise_coef
+
+    def test_no_controls(self):
+        from diagnostics import prognostic_scores
+        df = pd.DataFrame({
+            "treat": [True, True, True],
+            "x": [1.0, 2.0, 3.0],
+            "y": [4.0, 5.0, 6.0],
+        })
+        result = prognostic_scores(df, "treat", ["x"], "y")
+        assert result.empty
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
