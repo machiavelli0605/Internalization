@@ -326,3 +326,55 @@ def prognostic_scores(df, treatment_col, covariates, outcome):
         })
 
     return pd.DataFrame(rows)
+
+
+# ===================================================================
+# 10. Match quality by stratum
+# ===================================================================
+
+
+def match_quality_by_stratum(matched_t, matched_c_long, exact_cols):
+    """Per-stratum match quality: distance statistics and effective k.
+
+    Returns DataFrame with columns:
+        stratum, mean_dist, median_dist, max_dist, mean_k, min_k
+    """
+    if matched_t.empty or matched_c_long.empty or not exact_cols:
+        return pd.DataFrame()
+
+    if "distance" not in matched_c_long.columns:
+        return pd.DataFrame()
+
+    # Count neighbors per pair
+    k_per_pair = matched_c_long.groupby("pair_id").size().reset_index(name="k_used")
+
+    # Attach stratum from matched_t
+    stratum_info = matched_t[["pair_id"] + exact_cols].drop_duplicates("pair_id")
+    k_per_pair = k_per_pair.merge(stratum_info, on="pair_id", how="left")
+
+    # Per-pair mean distance
+    dist_per_pair = matched_c_long.groupby("pair_id")["distance"].mean().reset_index(name="mean_pair_dist")
+    k_per_pair = k_per_pair.merge(dist_per_pair, on="pair_id", how="left")
+
+    group_col = exact_cols[0] if len(exact_cols) == 1 else exact_cols
+    rows = []
+    for stratum_key, grp in k_per_pair.groupby(group_col, observed=True):
+        stratum_label = stratum_key if isinstance(stratum_key, str) else str(stratum_key)
+
+        # Distance stats from the raw control-level distances
+        stratum_pairs = set(grp["pair_id"])
+        stratum_dists = matched_c_long.loc[
+            matched_c_long["pair_id"].isin(stratum_pairs), "distance"
+        ].values
+        stratum_dists = stratum_dists[np.isfinite(stratum_dists)]
+
+        rows.append({
+            "stratum": stratum_label,
+            "mean_dist": float(np.mean(stratum_dists)) if len(stratum_dists) > 0 else np.nan,
+            "median_dist": float(np.median(stratum_dists)) if len(stratum_dists) > 0 else np.nan,
+            "max_dist": float(np.max(stratum_dists)) if len(stratum_dists) > 0 else np.nan,
+            "mean_k": float(grp["k_used"].mean()),
+            "min_k": int(grp["k_used"].min()),
+        })
+
+    return pd.DataFrame(rows)

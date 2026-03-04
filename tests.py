@@ -1239,5 +1239,38 @@ class TestPrognosticScores:
         assert result.empty
 
 
+class TestMatchQualityByStratum:
+    """match_quality_by_stratum reports distance and effective k per stratum."""
+
+    def test_basic_quality(self):
+        from diagnostics import match_quality_by_stratum
+        matched_t = pd.DataFrame({
+            "pair_id": range(6),
+            "Strategy": ["VWAP"] * 3 + ["TWAP"] * 3,
+        })
+        matched_c_long = pd.DataFrame({
+            "pair_id": [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5],
+            "Strategy": ["VWAP"] * 6 + ["TWAP"] * 6,
+            "distance": [0.01, 0.02, 0.03, 0.04, 0.01, 0.05,
+                         0.1, 0.2, 0.15, 0.25, 0.05, 0.3],
+            "match_weight": [0.6, 0.4] * 6,
+        })
+        result = match_quality_by_stratum(matched_t, matched_c_long, ["Strategy"])
+        assert not result.empty
+        assert set(result.columns) >= {"stratum", "mean_dist", "median_dist",
+                                        "max_dist", "mean_k", "min_k"}
+        # TWAP has larger distances
+        vwap_dist = result[result["stratum"] == "VWAP"]["mean_dist"].iloc[0]
+        twap_dist = result[result["stratum"] == "TWAP"]["mean_dist"].iloc[0]
+        assert twap_dist > vwap_dist
+
+    def test_empty_inputs(self):
+        from diagnostics import match_quality_by_stratum
+        result = match_quality_by_stratum(
+            pd.DataFrame(), pd.DataFrame(), ["Strategy"]
+        )
+        assert result.empty
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
