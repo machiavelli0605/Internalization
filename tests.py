@@ -1503,5 +1503,25 @@ class TestDiagnosticPlots:
         plt.close("all")
 
 
+class TestFullPipelineWithDiagnostics:
+    """End-to-end: run_full_parent_analysis returns diagnostics."""
+
+    def test_full_pipeline(self, small_parent_df):
+        from parent_analysis import run_full_parent_analysis
+
+        results = run_full_parent_analysis(small_parent_df)
+        assert "psm_diagnostics" in results
+
+        diag = results["psm_diagnostics"]
+        assert "stratum_att" in diag
+        assert "leave_one_out" in diag
+        assert "auroc" in diag
+        assert "variance_ratio_before" in diag
+        assert "prognostic" in diag
+        assert "rosenbaum_bounds" in diag
+        assert "e_values" in diag
+        assert "spec_sensitivity" in diag
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
