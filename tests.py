@@ -1397,5 +1397,111 @@ class TestRunPSMDiagnostics:
         assert isinstance(diag, dict)
 
 
+class TestDiagnosticPlots:
+    """New diagnostic plots P8-P13 should not crash on valid or empty data."""
+
+    def test_p8_ps_overlap_density(self):
+        from plots import plot_ps_overlap_density
+        rng = np.random.RandomState(0)
+        n = 200
+        psm_results = {
+            "propensity_scores": pd.Series(rng.uniform(0.1, 0.9, n)),
+        }
+        df = pd.DataFrame({
+            "hasCRB": [True] * 100 + [False] * 100,
+            "Strategy": rng.choice(["VWAP", "TWAP"], n),
+            "ps": rng.uniform(0.1, 0.9, n),
+        })
+        plot_ps_overlap_density(df, psm_results, treatment_col="hasCRB",
+                                exact_cols=["Strategy"])
+        plt.close("all")
+
+    def test_p8_empty(self):
+        from plots import plot_ps_overlap_density
+        plot_ps_overlap_density(pd.DataFrame(), {"propensity_scores": pd.Series(dtype=float)},
+                                treatment_col="hasCRB", exact_cols=[])
+        plt.close("all")
+
+    def test_p9_stratum_att_waterfall(self):
+        from plots import plot_stratum_att_waterfall
+        diag = {
+            "stratum_att": pd.DataFrame([
+                {"stratum": "VWAP", "outcome": "tempImpactBps", "att": -2.0,
+                 "ci_lower": -4.0, "ci_upper": 0.0, "n_treated": 60,
+                 "contribution_weight": 0.6},
+                {"stratum": "TWAP", "outcome": "tempImpactBps", "att": 3.0,
+                 "ci_lower": 1.0, "ci_upper": 5.0, "n_treated": 40,
+                 "contribution_weight": 0.4},
+            ]),
+        }
+        plot_stratum_att_waterfall(diag)
+        plt.close("all")
+
+    def test_p10_leave_one_out(self):
+        from plots import plot_leave_one_out
+        diag = {
+            "leave_one_out": pd.DataFrame([
+                {"excluded_stratum": "VWAP", "outcome": "tempImpactBps",
+                 "att_without": 3.0, "att_full": -1.0, "delta": 4.0},
+                {"excluded_stratum": "TWAP", "outcome": "tempImpactBps",
+                 "att_without": -3.0, "att_full": -1.0, "delta": -2.0},
+            ]),
+        }
+        plot_leave_one_out(diag)
+        plt.close("all")
+
+    def test_p11_prognostic_importance(self):
+        from plots import plot_prognostic_importance
+        diag = {
+            "prognostic": pd.DataFrame([
+                {"covariate": "log_qtyOverADV", "coef": 3.5, "se": 0.5, "pvalue": 0.001},
+                {"covariate": "PcpRate", "coef": -1.2, "se": 0.8, "pvalue": 0.13},
+            ]),
+        }
+        plot_prognostic_importance(diag)
+        plt.close("all")
+
+    def test_p12_rosenbaum_bounds(self):
+        from plots import plot_rosenbaum_bounds
+        diag = {
+            "rosenbaum_bounds": pd.DataFrame([
+                {"gamma": 1.0, "p_upper": 0.001},
+                {"gamma": 1.5, "p_upper": 0.04},
+                {"gamma": 2.0, "p_upper": 0.15},
+            ]),
+        }
+        plot_rosenbaum_bounds(diag)
+        plt.close("all")
+
+    def test_p13_spec_sensitivity(self):
+        from plots import plot_spec_sensitivity
+        diag = {
+            "spec_sensitivity": pd.DataFrame([
+                {"spec_name": "base", "att": -1.0, "ci_lower": -3.0, "ci_upper": 1.0},
+                {"spec_name": "drop_PcpRate", "att": 0.5, "ci_lower": -1.5, "ci_upper": 2.5},
+            ]),
+        }
+        plot_spec_sensitivity(diag)
+        plt.close("all")
+
+    def test_all_empty_diagnostics(self):
+        from plots import (plot_ps_overlap_density, plot_stratum_att_waterfall,
+                           plot_leave_one_out, plot_prognostic_importance,
+                           plot_rosenbaum_bounds, plot_spec_sensitivity)
+        empty_diag = {
+            "stratum_att": pd.DataFrame(),
+            "leave_one_out": pd.DataFrame(),
+            "prognostic": pd.DataFrame(),
+            "rosenbaum_bounds": pd.DataFrame(),
+            "spec_sensitivity": pd.DataFrame(),
+        }
+        plot_stratum_att_waterfall(empty_diag)
+        plot_leave_one_out(empty_diag)
+        plot_prognostic_importance(empty_diag)
+        plot_rosenbaum_bounds(empty_diag)
+        plot_spec_sensitivity(empty_diag)
+        plt.close("all")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
