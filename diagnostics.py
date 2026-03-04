@@ -490,3 +490,198 @@ def e_value(att, se):
         "e_value_point": _e_from_rr(rr_point),
         "e_value_ci": _e_from_rr(rr_ci),
     }
+
+
+# ===================================================================
+# 7. PS specification sensitivity
+# ===================================================================
+
+
+def _run_quick_psm_att(df, treatment_col, ps_covs, exact_cols, outcome,
+                       caliper_mult, n_neighbors):
+    """Run a simplified PSM pipeline for a single outcome.
+
+    Returns (att, ci_lo, ci_hi, auroc, mean_smd_after) or None.
+    """
+    from utils import estimate_propensity_scores, nearest_neighbor_match, compute_weighted_smd
+
+    needed = ps_covs + exact_cols + [treatment_col]
+    work = df.dropna(subset=[c for c in needed if c in df.columns]).copy()
+
+    if len(work) < 20 or work[treatment_col].astype(bool).nunique() < 2:
+        return None
+
+    # PS estimation
+    work["ps"] = np.nan
+    if exact_cols:
+        for _, g in work.groupby(exact_cols, dropna=False, observed=True):
+            if g[treatment_col].astype(bool).nunique() < 2 or len(g) < 10:
+                continue
+            ps_g = estimate_propensity_scores(g, treatment_col, ps_covs)
+            work.loc[g.index, "ps"] = ps_g
+    else:
+        work["ps"] = estimate_propensity_scores(work, treatment_col, ps_covs)
+
+    work = work.dropna(subset=["ps"]).copy()
+    if len(work) < 20 or work[treatment_col].astype(bool).nunique() < 2:
+        return None
+
+    p = np.clip(work["ps"].astype(float).values, 1e-6, 1 - 1e-6)
+    work["ps_logit"] = np.log(p / (1 - p))
+
+    # AUROC
+    auroc_res = ps_model_auroc(work["ps"].values, work[treatment_col].astype(int).values)
+    auroc = auroc_res["auroc"]
+
+    # NN matching
+    EPS = 1e-8
+    matched_t_list = []
+    matched_c_long_list = []
+    pair_id_counter = 0
+    group_iter = (work.groupby(exact_cols, dropna=False, observed=True)
+                  if exact_cols else [(None, work)])
+
+    for _, g in group_iter:
+        treated_g = g[g[treatment_col].astype(bool)].copy().reset_index(drop=True)
+        control_g = g[~g[treatment_col].astype(bool)].copy().reset_index(drop=True)
+        if len(treated_g) == 0 or len(control_g) == 0:
+            continue
+
+        ps_std = g["ps_logit"].std()
+        caliper = caliper_mult * ps_std if ps_std > 0 else 0.1
+        indices, distances = nearest_neighbor_match(
+            treated_g["ps_logit"].values, control_g["ps_logit"].values,
+            n_neighbors=n_neighbors, caliper=caliper,
+        )
+        valid_any = (indices >= 0).any(axis=1)
+        if valid_any.sum() == 0:
+            continue
+
+        mt = treated_g.loc[valid_any].copy().reset_index(drop=True)
+        nbr_idx = indices[valid_any]
+        nbr_dist = distances[valid_any]
+        n_mt = len(mt)
+        pair_ids = np.arange(pair_id_counter, pair_id_counter + n_mt)
+        pair_id_counter += n_mt
+        mt["pair_id"] = pair_ids
+
+        c_rows = []
+        for i, pid in enumerate(pair_ids):
+            for j in range(nbr_idx.shape[1]):
+                c_idx = int(nbr_idx[i, j])
+                if c_idx < 0:
+                    continue
+                d = float(nbr_dist[i, j])
+                c_rows.append((pid, c_idx, d))
+
+        if not c_rows:
+            continue
+
+        c_long = pd.DataFrame(c_rows, columns=["pair_id", "c_idx", "distance"])
+        c_long["w_raw"] = 1.0 / (c_long["distance"].values + EPS)
+        wsum = c_long.groupby("pair_id")["w_raw"].transform("sum")
+        c_long["match_weight"] = c_long["w_raw"] / wsum
+
+        c_attached = control_g.iloc[c_long["c_idx"].values].copy().reset_index(drop=True)
+        c_attached["pair_id"] = c_long["pair_id"].values
+        c_attached["match_weight"] = c_long["match_weight"].values
+        matched_t_list.append(mt)
+        matched_c_long_list.append(c_attached)
+
+    if not matched_t_list:
+        return None
+
+    matched_t = pd.concat(matched_t_list, ignore_index=True)
+    matched_c_long = pd.concat(matched_c_long_list, ignore_index=True)
+
+    # Compute ATT
+    pair_diffs = _compute_pair_diffs(matched_t, matched_c_long, outcome)
+    if pair_diffs.empty:
+        return None
+
+    diffs = pair_diffs["diff"].values
+    att, ci_lo, ci_hi = bootstrap_mean_ci(diffs, n_boot=500)
+
+    # Mean SMD after matching
+    all_covs = [c for c in ps_covs if c in matched_t.columns]
+    matched_all = pd.concat([
+        matched_t.assign(**{treatment_col: True, "match_weight": 1.0}),
+        matched_c_long.assign(**{treatment_col: False}),
+    ], ignore_index=True)
+    smd_after = compute_weighted_smd(matched_all, treatment_col, all_covs,
+                                     matched_all["match_weight"].values)
+    mean_smd = float(smd_after["smd"].abs().mean()) if not smd_after.empty else np.nan
+
+    return att, ci_lo, ci_hi, auroc, mean_smd
+
+
+def ps_specification_sensitivity(df, treatment_col, base_covariates, exact_cols,
+                                  outcome, caliper_mult=0.2, n_neighbors=10):
+    """Test ATT sensitivity to different PS model specifications.
+
+    Specifications tested:
+      1. Base model (all covariates)
+      2-N. Leave-one-out (drop each covariate)
+      N+1. Base + quadratic terms
+      N+2. Base + pairwise interactions of top-2 prognostic covariates
+
+    Returns DataFrame with columns:
+        spec_name, covariates_used, att, ci_lower, ci_upper, auroc, mean_smd_after
+    """
+    available = [c for c in base_covariates if c in df.columns]
+    if len(available) < 2 or len(df) < 40:
+        return pd.DataFrame()
+
+    specs = []
+
+    # 1. Base
+    specs.append(("base", available))
+
+    # 2-N. Leave-one-out
+    for cov in available:
+        remaining = [c for c in available if c != cov]
+        if len(remaining) < 1:
+            continue
+        specs.append((f"drop_{cov}", remaining))
+
+    # N+1. Quadratic terms
+    df = df.copy()
+    quad_covs = available.copy()
+    for cov in available:
+        sq_col = f"{cov}_sq"
+        if sq_col not in df.columns:
+            df[sq_col] = df[cov].astype(float) ** 2
+        quad_covs.append(sq_col)
+    specs.append(("quadratic", quad_covs))
+
+    # N+2. Interactions of top-2 prognostic covariates
+    prog = prognostic_scores(df, treatment_col, available, outcome)
+    if not prog.empty and len(prog) >= 2:
+        top2 = prog.reindex(prog["coef"].abs().sort_values(ascending=False).index)[:2]
+        c1, c2 = top2["covariate"].values
+        inter_col = f"{c1}_x_{c2}"
+        if inter_col not in df.columns:
+            df[inter_col] = df[c1].astype(float) * df[c2].astype(float)
+        inter_covs = available + [inter_col]
+        specs.append(("interactions", inter_covs))
+
+    rows = []
+    for spec_name, covs in specs:
+        result = _run_quick_psm_att(
+            df, treatment_col, covs, exact_cols, outcome,
+            caliper_mult, n_neighbors,
+        )
+        if result is None:
+            continue
+        att_val, ci_lo, ci_hi, auroc, mean_smd = result
+        rows.append({
+            "spec_name": spec_name,
+            "covariates_used": ", ".join(covs),
+            "att": att_val,
+            "ci_lower": ci_lo,
+            "ci_upper": ci_hi,
+            "auroc": auroc,
+            "mean_smd_after": mean_smd,
+        })
+
+    return pd.DataFrame(rows)

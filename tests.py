@@ -1320,5 +1320,50 @@ class TestEValue:
         assert result["e_value_point"] > 1.0
 
 
+class TestPSSpecificationSensitivity:
+    """ps_specification_sensitivity tests ATT under different PS model specs."""
+
+    def test_produces_multiple_specs(self):
+        from diagnostics import ps_specification_sensitivity
+        rng = np.random.RandomState(42)
+        n = 600
+        df = pd.DataFrame({
+            "hasCRB": [True] * 300 + [False] * 300,
+            "Strategy": rng.choice(["VWAP", "TWAP"], n),
+            "log_qtyOverADV": rng.uniform(0.01, 0.1, n),
+            "PcpRate": rng.uniform(0.05, 0.2, n),
+            "log_adv": rng.uniform(12, 17, n),
+            "duration_mins": rng.uniform(5, 60, n),
+            "start_mins": rng.uniform(570, 960, n),
+            "tempImpactBps": rng.normal(0, 5, n),
+        })
+        for oc in OUTCOME_VARS:
+            if oc not in df.columns:
+                df[oc] = rng.normal(0, 5, n)
+
+        result = ps_specification_sensitivity(
+            df, "hasCRB",
+            ["log_qtyOverADV", "PcpRate", "log_adv", "duration_mins", "start_mins"],
+            ["Strategy"], "tempImpactBps",
+            caliper_mult=0.2, n_neighbors=5,
+        )
+        assert not result.empty
+        assert "spec_name" in result.columns
+        assert "att" in result.columns
+        assert len(result) >= 7
+
+    def test_too_few_rows(self):
+        from diagnostics import ps_specification_sensitivity
+        df = pd.DataFrame({
+            "hasCRB": [True, False],
+            "x": [1.0, 2.0],
+            "tempImpactBps": [3.0, 4.0],
+        })
+        result = ps_specification_sensitivity(
+            df, "hasCRB", ["x"], [], "tempImpactBps", 0.2, 1
+        )
+        assert result.empty
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
