@@ -21,7 +21,6 @@ import pandas as pd
 
 from utils import bootstrap_mean_ci
 
-
 # ===================================================================
 # 1. Stratum-level ATT decomposition
 # ===================================================================
@@ -43,13 +42,19 @@ def _compute_pair_diffs(matched_t, matched_c_long, outcome):
         return pd.DataFrame()
 
     c_df["w_y"] = c_df[outcome] * c_df["match_weight"]
-    ctrl_agg = c_df.groupby("pair_id").agg(
-        control_sum=("w_y", "sum"),
-        wsum=("match_weight", "sum"),
-    ).reset_index()
+    ctrl_agg = (
+        c_df.groupby("pair_id")
+        .agg(
+            control_sum=("w_y", "sum"),
+            wsum=("match_weight", "sum"),
+        )
+        .reset_index()
+    )
     ctrl_agg["control_mean"] = ctrl_agg["control_sum"] / ctrl_agg["wsum"]
 
-    merged = t_df.merge(ctrl_agg[["pair_id", "control_mean"]], on="pair_id", how="inner")
+    merged = t_df.merge(
+        ctrl_agg[["pair_id", "control_mean"]], on="pair_id", how="inner"
+    )
     if merged.empty:
         return pd.DataFrame()
 
@@ -84,7 +89,9 @@ def stratum_att_decomposition(matched_t, matched_c_long, exact_cols, outcome_var
 
         group_col = exact_cols[0] if len(exact_cols) == 1 else exact_cols
         for stratum_key, grp in pair_diffs.groupby(group_col, observed=True):
-            stratum_label = stratum_key if isinstance(stratum_key, str) else str(stratum_key)
+            stratum_label = (
+                stratum_key if isinstance(stratum_key, str) else str(stratum_key)
+            )
             diffs = grp["diff"].values
             if len(diffs) == 0:
                 continue
@@ -93,18 +100,22 @@ def stratum_att_decomposition(matched_t, matched_c_long, exact_cols, outcome_var
 
             # Count controls for this stratum
             stratum_pairs = set(grp["pair_id"])
-            n_ctrl = matched_c_long[matched_c_long["pair_id"].isin(stratum_pairs)].shape[0]
+            n_ctrl = matched_c_long[
+                matched_c_long["pair_id"].isin(stratum_pairs)
+            ].shape[0]
 
-            rows.append({
-                "stratum": stratum_label,
-                "outcome": outcome,
-                "att": att,
-                "ci_lower": ci_lo,
-                "ci_upper": ci_hi,
-                "n_treated": len(diffs),
-                "n_control": n_ctrl,
-                "contribution_weight": len(diffs) / n_total if n_total > 0 else 0.0,
-            })
+            rows.append(
+                {
+                    "stratum": stratum_label,
+                    "outcome": outcome,
+                    "att": att,
+                    "ci_lower": ci_lo,
+                    "ci_upper": ci_hi,
+                    "n_treated": len(diffs),
+                    "n_control": n_ctrl,
+                    "contribution_weight": len(diffs) / n_total if n_total > 0 else 0.0,
+                }
+            )
 
     return pd.DataFrame(rows)
 
@@ -141,7 +152,9 @@ def leave_one_out_att(matched_t, matched_c_long, exact_cols, outcome_vars):
         group_col = exact_cols[0] if len(exact_cols) == 1 else exact_cols
         strata = full_diffs.groupby(group_col, observed=True)
         for stratum_key, _ in strata:
-            stratum_label = stratum_key if isinstance(stratum_key, str) else str(stratum_key)
+            stratum_label = (
+                stratum_key if isinstance(stratum_key, str) else str(stratum_key)
+            )
 
             # Exclude this stratum
             if len(exact_cols) == 1:
@@ -157,13 +170,15 @@ def leave_one_out_att(matched_t, matched_c_long, exact_cols, outcome_vars):
 
             att_without = float(np.nanmean(remaining))
 
-            rows.append({
-                "excluded_stratum": stratum_label,
-                "outcome": outcome,
-                "att_without": att_without,
-                "att_full": att_full,
-                "delta": att_without - att_full,
-            })
+            rows.append(
+                {
+                    "excluded_stratum": stratum_label,
+                    "outcome": outcome,
+                    "att_without": att_without,
+                    "att_full": att_full,
+                    "delta": att_without - att_full,
+                }
+            )
 
     return pd.DataFrame(rows)
 
@@ -192,6 +207,7 @@ def ps_model_auroc(ps, treatment):
         return {"auroc": np.nan, "n_treated": n_t, "n_control": n_c}
 
     from sklearn.metrics import roc_auc_score
+
     auroc = float(roc_auc_score(treatment, ps))
     return {"auroc": auroc, "n_treated": n_t, "n_control": n_c}
 
@@ -260,7 +276,9 @@ def covariate_smd_by_stratum(df, treatment_col, covariates, exact_cols):
     group_col = exact_cols[0] if len(exact_cols) == 1 else exact_cols
     rows = []
     for stratum_key, grp in df.groupby(group_col, observed=True):
-        stratum_label = stratum_key if isinstance(stratum_key, str) else str(stratum_key)
+        stratum_label = (
+            stratum_key if isinstance(stratum_key, str) else str(stratum_key)
+        )
         treated = grp[grp[treatment_col].astype(bool)]
         control = grp[~grp[treatment_col].astype(bool)]
 
@@ -305,6 +323,7 @@ def prognostic_scores(df, treatment_col, covariates, outcome):
         return pd.DataFrame()
 
     import statsmodels.api as sm
+
     X = sm.add_constant(work[available].astype(float))
     y = work[outcome].astype(float)
 
@@ -317,13 +336,15 @@ def prognostic_scores(df, treatment_col, covariates, outcome):
     for cov in available:
         if cov not in model.params.index:
             continue
-        rows.append({
-            "covariate": cov,
-            "coef": float(model.params[cov]),
-            "se": float(model.bse[cov]),
-            "pvalue": float(model.pvalues[cov]),
-            "r_squared": float(model.rsquared),
-        })
+        rows.append(
+            {
+                "covariate": cov,
+                "coef": float(model.params[cov]),
+                "se": float(model.bse[cov]),
+                "pvalue": float(model.pvalues[cov]),
+                "r_squared": float(model.rsquared),
+            }
+        )
 
     return pd.DataFrame(rows)
 
@@ -353,13 +374,19 @@ def match_quality_by_stratum(matched_t, matched_c_long, exact_cols):
     k_per_pair = k_per_pair.merge(stratum_info, on="pair_id", how="left")
 
     # Per-pair mean distance
-    dist_per_pair = matched_c_long.groupby("pair_id")["distance"].mean().reset_index(name="mean_pair_dist")
+    dist_per_pair = (
+        matched_c_long.groupby("pair_id")["distance"]
+        .mean()
+        .reset_index(name="mean_pair_dist")
+    )
     k_per_pair = k_per_pair.merge(dist_per_pair, on="pair_id", how="left")
 
     group_col = exact_cols[0] if len(exact_cols) == 1 else exact_cols
     rows = []
     for stratum_key, grp in k_per_pair.groupby(group_col, observed=True):
-        stratum_label = stratum_key if isinstance(stratum_key, str) else str(stratum_key)
+        stratum_label = (
+            stratum_key if isinstance(stratum_key, str) else str(stratum_key)
+        )
 
         # Distance stats from the raw control-level distances
         stratum_pairs = set(grp["pair_id"])
@@ -368,14 +395,22 @@ def match_quality_by_stratum(matched_t, matched_c_long, exact_cols):
         ].values
         stratum_dists = stratum_dists[np.isfinite(stratum_dists)]
 
-        rows.append({
-            "stratum": stratum_label,
-            "mean_dist": float(np.mean(stratum_dists)) if len(stratum_dists) > 0 else np.nan,
-            "median_dist": float(np.median(stratum_dists)) if len(stratum_dists) > 0 else np.nan,
-            "max_dist": float(np.max(stratum_dists)) if len(stratum_dists) > 0 else np.nan,
-            "mean_k": float(grp["k_used"].mean()),
-            "min_k": int(grp["k_used"].min()),
-        })
+        rows.append(
+            {
+                "stratum": stratum_label,
+                "mean_dist": float(np.mean(stratum_dists))
+                if len(stratum_dists) > 0
+                else np.nan,
+                "median_dist": float(np.median(stratum_dists))
+                if len(stratum_dists) > 0
+                else np.nan,
+                "max_dist": float(np.max(stratum_dists))
+                if len(stratum_dists) > 0
+                else np.nan,
+                "mean_k": float(grp["k_used"].mean()),
+                "min_k": int(grp["k_used"].min()),
+            }
+        )
 
     return pd.DataFrame(rows)
 
@@ -443,11 +478,12 @@ def rosenbaum_bounds(diffs, gamma_range=None):
             # Under Gamma, expected T+ under null:
             p_gamma = gamma / (1 + gamma)
             E_T = T_total * p_gamma
-            V_T = (ranks ** 2).sum() * gamma / (1 + gamma) ** 2
+            V_T = (ranks**2).sum() * gamma / (1 + gamma) ** 2
             sd_T = np.sqrt(V_T) if V_T > 0 else 1e-10
 
             # Normal approximation
             from scipy.stats import norm
+
             z = (T_plus - E_T) / sd_T
             p_upper = float(2 * norm.sf(abs(z)))  # two-sided
             rows.append({"gamma": gamma, "p_upper": p_upper})
@@ -472,6 +508,7 @@ def e_value(att, se):
 
     Returns dict with e_value_point, e_value_ci
     """
+
     def _e_from_rr(rr):
         rr = abs(rr)
         if rr <= 1.0:
@@ -497,13 +534,18 @@ def e_value(att, se):
 # ===================================================================
 
 
-def _run_quick_psm_att(df, treatment_col, ps_covs, exact_cols, outcome,
-                       caliper_mult, n_neighbors):
+def _run_quick_psm_att(
+    df, treatment_col, ps_covs, exact_cols, outcome, caliper_mult, n_neighbors
+):
     """Run a simplified PSM pipeline for a single outcome.
 
     Returns (att, ci_lo, ci_hi, auroc, mean_smd_after) or None.
     """
-    from utils import estimate_propensity_scores, nearest_neighbor_match, compute_weighted_smd
+    from utils import (
+        compute_weighted_smd,
+        estimate_propensity_scores,
+        nearest_neighbor_match,
+    )
 
     needed = ps_covs + exact_cols + [treatment_col]
     work = df.dropna(subset=[c for c in needed if c in df.columns]).copy()
@@ -530,7 +572,9 @@ def _run_quick_psm_att(df, treatment_col, ps_covs, exact_cols, outcome,
     work["ps_logit"] = np.log(p / (1 - p))
 
     # AUROC
-    auroc_res = ps_model_auroc(work["ps"].values, work[treatment_col].astype(int).values)
+    auroc_res = ps_model_auroc(
+        work["ps"].values, work[treatment_col].astype(int).values
+    )
     auroc = auroc_res["auroc"]
 
     # NN matching
@@ -538,8 +582,11 @@ def _run_quick_psm_att(df, treatment_col, ps_covs, exact_cols, outcome,
     matched_t_list = []
     matched_c_long_list = []
     pair_id_counter = 0
-    group_iter = (work.groupby(exact_cols, dropna=False, observed=True)
-                  if exact_cols else [(None, work)])
+    group_iter = (
+        work.groupby(exact_cols, dropna=False, observed=True)
+        if exact_cols
+        else [(None, work)]
+    )
 
     for _, g in group_iter:
         treated_g = g[g[treatment_col].astype(bool)].copy().reset_index(drop=True)
@@ -550,8 +597,10 @@ def _run_quick_psm_att(df, treatment_col, ps_covs, exact_cols, outcome,
         ps_std = g["ps_logit"].std()
         caliper = caliper_mult * ps_std if ps_std > 0 else 0.1
         indices, distances = nearest_neighbor_match(
-            treated_g["ps_logit"].values, control_g["ps_logit"].values,
-            n_neighbors=n_neighbors, caliper=caliper,
+            treated_g["ps_logit"].values,
+            control_g["ps_logit"].values,
+            n_neighbors=n_neighbors,
+            caliper=caliper,
         )
         valid_any = (indices >= 0).any(axis=1)
         if valid_any.sum() == 0:
@@ -582,7 +631,9 @@ def _run_quick_psm_att(df, treatment_col, ps_covs, exact_cols, outcome,
         wsum = c_long.groupby("pair_id")["w_raw"].transform("sum")
         c_long["match_weight"] = c_long["w_raw"] / wsum
 
-        c_attached = control_g.iloc[c_long["c_idx"].values].copy().reset_index(drop=True)
+        c_attached = (
+            control_g.iloc[c_long["c_idx"].values].copy().reset_index(drop=True)
+        )
         c_attached["pair_id"] = c_long["pair_id"].values
         c_attached["match_weight"] = c_long["match_weight"].values
         matched_t_list.append(mt)
@@ -604,19 +655,30 @@ def _run_quick_psm_att(df, treatment_col, ps_covs, exact_cols, outcome,
 
     # Mean SMD after matching
     all_covs = [c for c in ps_covs if c in matched_t.columns]
-    matched_all = pd.concat([
-        matched_t.assign(**{treatment_col: True, "match_weight": 1.0}),
-        matched_c_long.assign(**{treatment_col: False}),
-    ], ignore_index=True)
-    smd_after = compute_weighted_smd(matched_all, treatment_col, all_covs,
-                                     matched_all["match_weight"].values)
+    matched_all = pd.concat(
+        [
+            matched_t.assign(**{treatment_col: True, "match_weight": 1.0}),
+            matched_c_long.assign(**{treatment_col: False}),
+        ],
+        ignore_index=True,
+    )
+    smd_after = compute_weighted_smd(
+        matched_all, treatment_col, all_covs, matched_all["match_weight"].values
+    )
     mean_smd = float(smd_after["smd"].abs().mean()) if not smd_after.empty else np.nan
 
     return att, ci_lo, ci_hi, auroc, mean_smd
 
 
-def ps_specification_sensitivity(df, treatment_col, base_covariates, exact_cols,
-                                  outcome, caliper_mult=0.2, n_neighbors=10):
+def ps_specification_sensitivity(
+    df,
+    treatment_col,
+    base_covariates,
+    exact_cols,
+    outcome,
+    caliper_mult=0.2,
+    n_neighbors=10,
+):
     """Test ATT sensitivity to different PS model specifications.
 
     Specifications tested:
@@ -644,16 +706,6 @@ def ps_specification_sensitivity(df, treatment_col, base_covariates, exact_cols,
             continue
         specs.append((f"drop_{cov}", remaining))
 
-    # N+1. Quadratic terms
-    df = df.copy()
-    quad_covs = available.copy()
-    for cov in available:
-        sq_col = f"{cov}_sq"
-        if sq_col not in df.columns:
-            df[sq_col] = df[cov].astype(float) ** 2
-        quad_covs.append(sq_col)
-    specs.append(("quadratic", quad_covs))
-
     # N+2. Interactions of top-2 prognostic covariates
     prog = prognostic_scores(df, treatment_col, available, outcome)
     if not prog.empty and len(prog) >= 2:
@@ -667,21 +719,29 @@ def ps_specification_sensitivity(df, treatment_col, base_covariates, exact_cols,
 
     rows = []
     for spec_name, covs in specs:
+        print(f"        {spec_name}")
         result = _run_quick_psm_att(
-            df, treatment_col, covs, exact_cols, outcome,
-            caliper_mult, n_neighbors,
+            df,
+            treatment_col,
+            covs,
+            exact_cols,
+            outcome,
+            caliper_mult,
+            n_neighbors,
         )
         if result is None:
             continue
         att_val, ci_lo, ci_hi, auroc, mean_smd = result
-        rows.append({
-            "spec_name": spec_name,
-            "covariates_used": ", ".join(covs),
-            "att": att_val,
-            "ci_lower": ci_lo,
-            "ci_upper": ci_hi,
-            "auroc": auroc,
-            "mean_smd_after": mean_smd,
-        })
+        rows.append(
+            {
+                "spec_name": spec_name,
+                "covariates_used": ", ".join(covs),
+                "att": att_val,
+                "ci_lower": ci_lo,
+                "ci_upper": ci_hi,
+                "auroc": auroc,
+                "mean_smd_after": mean_smd,
+            }
+        )
 
     return pd.DataFrame(rows)

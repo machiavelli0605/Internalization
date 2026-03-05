@@ -27,6 +27,18 @@ from config import (
     TREATMENT_COLS_DOSE,
     TREATMENT_COLS_ITT,
 )
+from diagnostics import (
+    covariate_smd_by_stratum,
+    e_value,
+    leave_one_out_att,
+    match_quality_by_stratum,
+    prognostic_scores,
+    ps_model_auroc,
+    ps_specification_sensitivity,
+    rosenbaum_bounds,
+    stratum_att_decomposition,
+    variance_ratio,
+)
 from utils import (
     bootstrap_mean_ci,
     compute_ipw_weights,
@@ -152,7 +164,9 @@ def common_support_summary(ps, treat_mask):
         "control_min": float(lo_c),
         "control_max": float(hi_c),
         "treated_outside_range_n": int(outside.sum()),
-        "treated_ouside_range_pct": float(100 * outside.mean()) if len(ps_t) else np.nan,
+        "treated_outside_range_pct": float(100 * outside.mean())
+        if len(ps_t)
+        else np.nan,
     }
 
 
@@ -237,7 +251,9 @@ def descriptive_summary(df):
                 "p90": crb_nz.quantile(0.90),
                 "n_nonzero": len(crb_nz),
                 "n_enabled": len(enabled),
-                "pct_with_crb": len(crb_nz) / len(enabled) * 100 if len(enabled) > 0 else 0,
+                "pct_with_crb": len(crb_nz) / len(enabled) * 100
+                if len(enabled) > 0
+                else 0,
             }
         ]
     )
@@ -245,7 +261,9 @@ def descriptive_summary(df):
     # --- Mean outcomes by CRBPctBucket -----------------------------------
     available_outcomes = [o for o in OUTCOME_VARS if o in df.columns]
     if available_outcomes:
-        bucket_stats = df.groupby("CRBPctBucket", observed=True)[available_outcomes].agg(["mean", "std", "count"])
+        bucket_stats = df.groupby("CRBPctBucket", observed=True)[
+            available_outcomes
+        ].agg(["mean", "std", "count"])
     else:
         bucket_stats = pd.DataFrame()
     results["outcome_by_bucket"] = bucket_stats
@@ -414,7 +432,9 @@ def run_psm_analysis(
     # Propensity score diagnostics
     tmask = work[treatment_col].astype(bool).values
     results["common_support_ps"] = common_support_summary(work["ps"].values, tmask)
-    results["common_support_ps_logit"] = common_support_summary(work["ps_logit"].values, tmask)
+    results["common_support_ps_logit"] = common_support_summary(
+        work["ps_logit"].values, tmask
+    )
     ps_diag = work["ps"].values
     ps_logit_diag = work["ps_logit"].values
     tr_diag = work[treatment_col].astype(bool).values
@@ -427,33 +447,48 @@ def run_psm_analysis(
         "treated": {**quantiles(ps_logit_diag[tr_diag]), "n": int(np.sum(tr_diag))},
         "control": {**quantiles(ps_logit_diag[~tr_diag]), "n": int(np.sum(~tr_diag))},
     }
-    results["nn_distance_ps_before"] = nearest_distance_summary(work["ps"].values, tmask)
-    results["nn_distance_ps_logit_before"] = nearest_distance_summary(work["ps_logit"].values, tmask)
+    results["nn_distance_ps_before"] = nearest_distance_summary(
+        work["ps"].values, tmask
+    )
+    results["nn_distance_ps_logit_before"] = nearest_distance_summary(
+        work["ps_logit"].values, tmask
+    )
 
     if exact_cols:
         g_before = work.groupby(exact_cols, dropna=False, observed=True)[treatment_col]
         strata_counts_before = g_before.agg(
-            size="size",
-            n_treated=lambda s: int(s.astype(bool).sum())
+            size="size", n_treated=lambda s: int(s.astype(bool).sum())
         ).reset_index()
-        strata_counts_before["n_control"] = strata_counts_before["size"] - strata_counts_before["n_treated"]
-        strata_counts_before["mean"] = strata_counts_before["n_treated"] / strata_counts_before["size"]
+        strata_counts_before["n_control"] = (
+            strata_counts_before["size"] - strata_counts_before["n_treated"]
+        )
+        strata_counts_before["mean"] = (
+            strata_counts_before["n_treated"] / strata_counts_before["size"]
+        )
         results["strata_counts_before"] = strata_counts_before
-        overlap_mask = (strata_counts_before["n_treated"] > 0) & (strata_counts_before["n_control"] > 0)
+        overlap_mask = (strata_counts_before["n_treated"] > 0) & (
+            strata_counts_before["n_control"] > 0
+        )
         n_strata = int(len(strata_counts_before))
         n_overlap = int(overlap_mask.sum())
 
         results["overlap_summary_before"] = {
             "n_strata": n_strata,
             "n_overlap_strata": n_overlap,
-            "pct_overlap_strata": float(100*n_overlap/n_strata) if n_strata else np.nan,
+            "pct_overlap_strata": float(100 * n_overlap / n_strata)
+            if n_strata
+            else np.nan,
         }
 
     results["smd_before"] = compute_smd(work, treatment_col, available_covs)
 
     # --- IPW (full data) ------------------------------------------------
-    weights = compute_ipw_weights(work["ps"].values, work[treatment_col].astype(int).values)
-    results["smd_after_ipw"] = compute_weighted_smd(work, treatment_col, available_covs, weights)
+    weights = compute_ipw_weights(
+        work["ps"].values, work[treatment_col].astype(int).values
+    )
+    results["smd_after_ipw"] = compute_weighted_smd(
+        work, treatment_col, available_covs, weights
+    )
 
     ipw_rows = []
     for outcome in OUTCOME_VARS:
@@ -483,12 +518,32 @@ def run_psm_analysis(
         budget = max_sample - len(treated_all)
         if budget <= 0:
             controls = work[~work[treatment_col].astype(bool)]
-            treated_s = stratified_sample(treated_all, strata_cols=exact_cols, n_total=max_sample // 2, random_state=42, treatment_col=None)
-            controls_s = stratified_sample(controls, strata_cols=exact_cols, n_total=max_sample // 2, random_state=42, treatment_col=None, preserve_treatment_share=False)
+            treated_s = stratified_sample(
+                treated_all,
+                strata_cols=exact_cols,
+                n_total=max_sample // 2,
+                random_state=42,
+                treatment_col=None,
+            )
+            controls_s = stratified_sample(
+                controls,
+                strata_cols=exact_cols,
+                n_total=max_sample // 2,
+                random_state=42,
+                treatment_col=None,
+                preserve_treatment_share=False,
+            )
             work_nn = pd.concat([treated_s, controls_s], axis=0)
         else:
             controls = work[~work[treatment_col].astype(bool)]
-            controls_s = stratified_sample(controls, strata_cols=exact_cols, n_total=budget, random_state=42, treatment_col=None, preserve_treatment_share=False)
+            controls_s = stratified_sample(
+                controls,
+                strata_cols=exact_cols,
+                n_total=budget,
+                random_state=42,
+                treatment_col=None,
+                preserve_treatment_share=False,
+            )
             work_nn = pd.concat([treated_all, controls_s], axis=0)
     else:
         work_nn = work
@@ -496,10 +551,14 @@ def run_psm_analysis(
     matched_t_list = []
     matched_c_long_list = []
     pair_id_counter = 0
-    
-    group_iter = work_nn.groupby(exact_cols, dropna=False, observed=True) if exact_cols else [(None, work_nn)]
+
+    group_iter = (
+        work_nn.groupby(exact_cols, dropna=False, observed=True)
+        if exact_cols
+        else [(None, work_nn)]
+    )
     k = N_NEIGHBORS
-    
+
     for _, g in group_iter:
         treated_g = g[g[treatment_col].astype(bool)].copy().reset_index(drop=True)
         control_g = g[~g[treatment_col].astype(bool)].copy().reset_index(drop=True)
@@ -512,8 +571,10 @@ def run_psm_analysis(
 
         ps_std = g["ps_logit"].std()
         caliper = caliper_mult * ps_std if ps_std > 0 else 0.1
-        
-        indices, distances = nearest_neighbor_match(ps_t, ps_c, n_neighbors=k, caliper=caliper)
+
+        indices, distances = nearest_neighbor_match(
+            ps_t, ps_c, n_neighbors=k, caliper=caliper
+        )
 
         valid_any = (indices >= 0).any(axis=1)
         if valid_any.sum() == 0:
@@ -545,7 +606,9 @@ def run_psm_analysis(
         wsum = c_long.groupby("pair_id")["w_raw"].transform("sum")
         c_long["match_weight"] = c_long["w_raw"] / wsum
 
-        c_attached = control_g.iloc[c_long["c_idx"].values].copy().reset_index(drop=True)
+        c_attached = (
+            control_g.iloc[c_long["c_idx"].values].copy().reset_index(drop=True)
+        )
         c_attached["pair_id"] = c_long["pair_id"].values
         c_attached["distance"] = c_long["distance"].values
         c_attached["nn_rank"] = c_long["nn_rank"].values
@@ -558,33 +621,61 @@ def run_psm_analysis(
         matched_c_long = pd.concat(matched_c_long_list, ignore_index=True)
         results["matched_t"] = matched_t
         results["matched_c_long"] = matched_c_long
-        matched_all_long = pd.concat([matched_t.assign(**{treatment_col: True, "match_weight": 1.0}),
-                                      matched_c_long.assign(**{treatment_col: False})], ignore_index=True)
+        matched_all_long = pd.concat(
+            [
+                matched_t.assign(**{treatment_col: True, "match_weight": 1.0}),
+                matched_c_long.assign(**{treatment_col: False}),
+            ],
+            ignore_index=True,
+        )
 
         if exact_cols:
-            g_after = matched_all_long.groupby(exact_cols, dropna=False, observed=True)[treatment_col]
-            strata_counts_after = g_after.agg(size="size", n_treated=lambda s: int(s.astype(bool).sum())).reset_index()
-            strata_counts_after["n_control"] = strata_counts_after["size"] - strata_counts_after["n_treated"]
-            strata_counts_after["mean"] = strata_counts_after["n_treated"] / strata_counts_after["size"]
+            g_after = matched_all_long.groupby(exact_cols, dropna=False, observed=True)[
+                treatment_col
+            ]
+            strata_counts_after = g_after.agg(
+                size="size", n_treated=lambda s: int(s.astype(bool).sum())
+            ).reset_index()
+            strata_counts_after["n_control"] = (
+                strata_counts_after["size"] - strata_counts_after["n_treated"]
+            )
+            strata_counts_after["mean"] = (
+                strata_counts_after["n_treated"] / strata_counts_after["size"]
+            )
             results["strata_counts_after"] = strata_counts_after
 
-            overlap_mask_a = (strata_counts_after["n_treated"] > 0) & (strata_counts_after["n_control"] > 0)
+            overlap_mask_a = (strata_counts_after["n_treated"] > 0) & (
+                strata_counts_after["n_control"] > 0
+            )
             n_strata_a = int(len(strata_counts_after))
             n_overlap_a = int(overlap_mask_a.sum())
-            
+
             results["overlap_summary_after"] = {
                 "n_strata": n_strata_a,
                 "n_overlap_strata": n_overlap_a,
-                "pct_overlap_strata": float(100.0*n_overlap_a/n_strata_a) if n_strata_a else np.nan,
+                "pct_overlap_strata": float(100.0 * n_overlap_a / n_strata_a)
+                if n_strata_a
+                else np.nan,
             }
 
-            if not results["strata_counts_before"].empty and not strata_counts_after.empty:
-                before_sizes = results["strata_counts_before"][exact_cols + ["size", "n_treated"]].rename(
+            if (
+                not results["strata_counts_before"].empty
+                and not strata_counts_after.empty
+            ):
+                before_sizes = results["strata_counts_before"][
+                    exact_cols + ["size", "n_treated"]
+                ].rename(
                     columns={"size": "size_before", "n_treated": "n_treated_before"}
                 )
-                treated_after = matched_t.groupby(exact_cols, dropna=False, observed=True).size().reset_index(name="treated_after")
+                treated_after = (
+                    matched_t.groupby(exact_cols, dropna=False, observed=True)
+                    .size()
+                    .reset_index(name="treated_after")
+                )
                 retention = before_sizes.merge(treated_after, on=exact_cols, how="left")
-                retention["treated_after"] = retention["treated_after"].fillna(0).astype(int)
+                retention["treated_after"] = (
+                    retention["treated_after"].fillna(0).astype(int)
+                )
                 retention["matched_retention_pct"] = np.where(
                     retention["n_treated_before"] > 0,
                     100.0 * retention["treated_after"] / retention["n_treated_before"],
@@ -593,36 +684,65 @@ def run_psm_analysis(
                 results["match_retention_by_stratum"] = retention
             else:
                 results["match_retention_by_stratum"] = pd.DataFrame()
-        results["smd_after_nn"] = compute_weighted_smd(matched_all_long, treatment_col, available_covs, matched_all_long["match_weight"].values)
+        results["smd_after_nn"] = compute_weighted_smd(
+            matched_all_long,
+            treatment_col,
+            available_covs,
+            matched_all_long["match_weight"].values,
+        )
 
         # Outcome comparison — keep pairs aligned (same positional index)
         nn_rows = []
         for outcome in OUTCOME_VARS:
-            if outcome not in matched_t.columns or outcome not in matched_c_long.columns:
+            if (
+                outcome not in matched_t.columns
+                or outcome not in matched_c_long.columns
+            ):
                 continue
             t_df = matched_t[["pair_id", outcome]].copy()
             c_df = matched_c_long[["pair_id", outcome, "match_weight"]].copy()
             t_df = t_df[np.isfinite(t_df[outcome].values)]
-            c_df = c_df[np.isfinite(c_df[outcome].values) & (c_df["match_weight"].values > 0)]
+            c_df = c_df[
+                np.isfinite(c_df[outcome].values) & (c_df["match_weight"].values > 0)
+            ]
 
             if t_df.empty or c_df.empty:
                 continue
 
             c_df["w_y"] = c_df[outcome] * c_df["match_weight"]
-            ctrl_mean = c_df.groupby("pair_id").agg(control_sum=("w_y", "sum"), wsum=("match_weight", "sum"),
-                                                    k_used=(outcome, "size")).reset_index()
-            ctrl_mean["control_mean"] = ctrl_mean["control_sum"]/ctrl_mean["wsum"]
-            merged = t_df.merge(ctrl_mean[["pair_id", "control_mean", "k_used"]], on="pair_id", how="inner")
+            ctrl_mean = (
+                c_df.groupby("pair_id")
+                .agg(
+                    control_sum=("w_y", "sum"),
+                    wsum=("match_weight", "sum"),
+                    k_used=(outcome, "size"),
+                )
+                .reset_index()
+            )
+            ctrl_mean["control_mean"] = ctrl_mean["control_sum"] / ctrl_mean["wsum"]
+            merged = t_df.merge(
+                ctrl_mean[["pair_id", "control_mean", "k_used"]],
+                on="pair_id",
+                how="inner",
+            )
             if merged.empty:
                 continue
 
             diffs = merged[outcome].values - merged["control_mean"].values
             diff_mean, diff_lo, diff_hi = bootstrap_mean_ci(diffs, n_boot=1000)
 
-            nn_rows.append({"outcome": outcome, "treated_mean": float(np.nanmean(merged[outcome].values)),
-                            "control_mean": float(np.nanmean(merged["control_mean"].values)), "diff": diff_mean,
-                            "diff_ci_lower": diff_lo, "diff_ci_upper": diff_hi, "n_pairs": int(len(merged)),
-                            "avg_k_used": float(np.nanmean(merged["k_used"].values)),})
+            nn_rows.append(
+                {
+                    "outcome": outcome,
+                    "treated_mean": float(np.nanmean(merged[outcome].values)),
+                    "control_mean": float(np.nanmean(merged["control_mean"].values)),
+                    "diff": diff_mean,
+                    "diff_ci_lower": diff_lo,
+                    "diff_ci_upper": diff_hi,
+                    "n_pairs": int(len(merged)),
+                    "avg_k_used": float(np.nanmean(merged["k_used"].values)),
+                }
+            )
         results["nn_outcomes"] = pd.DataFrame(nn_rows)
     else:
         results["smd_after_nn"] = pd.DataFrame()
@@ -632,7 +752,7 @@ def run_psm_analysis(
             results["overlap_summary_after"] = {
                 "n_strata": 0,
                 "n_overlap_strata": 0,
-                "pct_overlap_strata": np.nan
+                "pct_overlap_strata": np.nan,
             }
             results["match_retention_by_stratum"] = pd.DataFrame()
 
@@ -652,19 +772,6 @@ def run_psm_diagnostics(df, psm_results, treatment_col="hasCRB"):
     -------
     dict with diagnostic results
     """
-    from diagnostics import (
-        stratum_att_decomposition,
-        leave_one_out_att,
-        ps_model_auroc,
-        variance_ratio,
-        covariate_smd_by_stratum,
-        prognostic_scores,
-        match_quality_by_stratum,
-        rosenbaum_bounds,
-        e_value,
-        ps_specification_sensitivity,
-    )
-
     matched_t = psm_results.get("matched_t", pd.DataFrame())
     matched_c_long = psm_results.get("matched_c_long", pd.DataFrame())
     exact_cols = [c for c in EXACT_MATCH_COLS if c in df.columns]
@@ -673,19 +780,32 @@ def run_psm_diagnostics(df, psm_results, treatment_col="hasCRB"):
     diag = {}
 
     # 1. Stratum ATT decomposition
+    print("    Stratum ATT decomposition ...")
     diag["stratum_att"] = stratum_att_decomposition(
-        matched_t, matched_c_long, exact_cols, OUTCOME_VARS,
+        matched_t,
+        matched_c_long,
+        exact_cols,
+        OUTCOME_VARS,
     )
 
     # 2. Leave-one-out
+    print("    Leave-one-out ...")
     diag["leave_one_out"] = leave_one_out_att(
-        matched_t, matched_c_long, exact_cols, OUTCOME_VARS,
+        matched_t,
+        matched_c_long,
+        exact_cols,
+        OUTCOME_VARS,
     )
 
     # 3. AUROC
+    print("    AUROC ...")
     ps = psm_results.get("propensity_scores", pd.Series(dtype=float))
     if not ps.empty and treatment_col in df.columns:
-        treat_vals = df.loc[ps.index, treatment_col].astype(int).values if ps.index.isin(df.index).all() else np.array([])
+        treat_vals = (
+            df.loc[ps.index, treatment_col].astype(int).values
+            if ps.index.isin(df.index).all()
+            else np.array([])
+        )
         if len(treat_vals) == len(ps):
             diag["auroc"] = ps_model_auroc(ps.values, treat_vals)
         else:
@@ -694,40 +814,75 @@ def run_psm_diagnostics(df, psm_results, treatment_col="hasCRB"):
         diag["auroc"] = {"auroc": np.nan, "n_treated": 0, "n_control": 0}
 
     # 4. Variance ratio (before and after)
+    print("    Variance ratio ...")
     needed = available_covs + [treatment_col]
     work = df.dropna(subset=[c for c in needed if c in df.columns])
-    diag["variance_ratio_before"] = variance_ratio(work, treatment_col, available_covs) if not work.empty else pd.DataFrame()
+    diag["variance_ratio_before"] = (
+        variance_ratio(work, treatment_col, available_covs)
+        if not work.empty
+        else pd.DataFrame()
+    )
 
     if not matched_t.empty and not matched_c_long.empty:
-        matched_all = pd.concat([
-            matched_t.assign(**{treatment_col: True, "match_weight": 1.0}),
-            matched_c_long.assign(**{treatment_col: False}),
-        ], ignore_index=True)
+        matched_all = pd.concat(
+            [
+                matched_t.assign(**{treatment_col: True, "match_weight": 1.0}),
+                matched_c_long.assign(**{treatment_col: False}),
+            ],
+            ignore_index=True,
+        )
         diag["variance_ratio_after"] = variance_ratio(
-            matched_all, treatment_col, available_covs,
+            matched_all,
+            treatment_col,
+            available_covs,
             weights=matched_all["match_weight"].values,
         )
     else:
         diag["variance_ratio_after"] = pd.DataFrame()
 
     # 5. SMD by stratum
-    diag["smd_by_stratum"] = covariate_smd_by_stratum(
-        work, treatment_col, available_covs, exact_cols,
-    ) if not work.empty else pd.DataFrame()
+    print("    SMD by stratum ...")
+    diag["smd_by_stratum"] = (
+        covariate_smd_by_stratum(
+            work,
+            treatment_col,
+            available_covs,
+            exact_cols,
+        )
+        if not work.empty
+        else pd.DataFrame()
+    )
 
     # 6. Prognostic scores
-    diag["prognostic"] = prognostic_scores(
-        work, treatment_col, available_covs, "tempImpactBps",
-    ) if not work.empty and "tempImpactBps" in work.columns else pd.DataFrame()
+    print("    Prognostic scores ...")
+    diag["prognostic"] = (
+        prognostic_scores(
+            work,
+            treatment_col,
+            available_covs,
+            "tempImpactBps",
+        )
+        if not work.empty and "tempImpactBps" in work.columns
+        else pd.DataFrame()
+    )
 
     # 10. Match quality by stratum
+    print("    Match Quality by stratum ...")
     diag["match_quality"] = match_quality_by_stratum(
-        matched_t, matched_c_long, exact_cols,
+        matched_t,
+        matched_c_long,
+        exact_cols,
     )
 
     # 8. Rosenbaum bounds (on tempImpactBps pair diffs)
-    if not matched_t.empty and not matched_c_long.empty and "tempImpactBps" in matched_t.columns:
+    print("    Rosenbaum bounds ...")
+    if (
+        not matched_t.empty
+        and not matched_c_long.empty
+        and "tempImpactBps" in matched_t.columns
+    ):
         from diagnostics import _compute_pair_diffs
+
         pair_diffs = _compute_pair_diffs(matched_t, matched_c_long, "tempImpactBps")
         if not pair_diffs.empty:
             diag["rosenbaum_bounds"] = rosenbaum_bounds(pair_diffs["diff"].values)
@@ -737,6 +892,7 @@ def run_psm_diagnostics(df, psm_results, treatment_col="hasCRB"):
         diag["rosenbaum_bounds"] = pd.DataFrame()
 
     # 9. E-values (for each outcome)
+    print("    E-values ...")
     nn_outcomes = psm_results.get("nn_outcomes", pd.DataFrame())
     e_vals = {}
     if not nn_outcomes.empty:
@@ -748,10 +904,16 @@ def run_psm_diagnostics(df, psm_results, treatment_col="hasCRB"):
     diag["e_values"] = e_vals
 
     # 7. PS specification sensitivity
+    print("    PS Specification sensitivity ...")
     if not df.empty and treatment_col in df.columns and "tempImpactBps" in df.columns:
         diag["spec_sensitivity"] = ps_specification_sensitivity(
-            df, treatment_col, available_covs, exact_cols,
-            "tempImpactBps", caliper_mult=0.2, n_neighbors=N_NEIGHBORS,
+            df,
+            treatment_col,
+            available_covs,
+            exact_cols,
+            "tempImpactBps",
+            caliper_mult=0.2,
+            n_neighbors=N_NEIGHBORS,
         )
     else:
         diag["spec_sensitivity"] = pd.DataFrame()
@@ -809,10 +971,14 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
             continue
 
         # Create binary treatment column for this comparison
-        work = pd.concat([
-            treated.assign(_dose_treated=True),
-            controls.assign(_dose_treated=False),
-        ], axis=0, ignore_index=True)
+        work = pd.concat(
+            [
+                treated.assign(_dose_treated=True),
+                controls.assign(_dose_treated=False),
+            ],
+            axis=0,
+            ignore_index=True,
+        )
 
         needed = ps_covs + exact_cols + ["_dose_treated"]
         work = work.dropna(subset=needed).copy()
@@ -844,7 +1010,9 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
         # --- Strata diagnostics ---
         bucket_diag = {}
         if exact_cols:
-            g_ct = work.groupby(exact_cols, dropna=False, observed=True)["_dose_treated"]
+            g_ct = work.groupby(exact_cols, dropna=False, observed=True)[
+                "_dose_treated"
+            ]
             sc = g_ct.agg(size="size", n_treated=lambda s: int(s.sum())).reset_index()
             sc["n_control"] = sc["size"] - sc["n_treated"]
             bucket_diag["strata_counts"] = sc
@@ -852,7 +1020,9 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
             bucket_diag["overlap_summary"] = {
                 "n_strata": int(len(sc)),
                 "n_overlap": int(overlap.sum()),
-                "pct_overlap": float(100 * overlap.sum() / len(sc)) if len(sc) else np.nan,
+                "pct_overlap": float(100 * overlap.sum() / len(sc))
+                if len(sc)
+                else np.nan,
             }
 
         # --- k:1 NN matching within strata (same as section C) ---
@@ -862,7 +1032,8 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
 
         group_iter = (
             work.groupby(exact_cols, dropna=False, observed=True)
-            if exact_cols else [(None, work)]
+            if exact_cols
+            else [(None, work)]
         )
 
         for _, g in group_iter:
@@ -907,19 +1078,26 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
             if not rows:
                 continue
 
-            c_long = pd.DataFrame(rows, columns=["pair_id", "c_idx", "distance", "nn_rank"])
+            c_long = pd.DataFrame(
+                rows, columns=["pair_id", "c_idx", "distance", "nn_rank"]
+            )
             c_long["w_raw"] = dist_to_weight(c_long["distance"].values)
             wsum = c_long.groupby("pair_id")["w_raw"].transform("sum")
             c_long["match_weight"] = c_long["w_raw"] / wsum
 
-            c_attached = control_g.iloc[c_long["c_idx"].values].copy().reset_index(drop=True)
+            c_attached = (
+                control_g.iloc[c_long["c_idx"].values].copy().reset_index(drop=True)
+            )
             c_attached["pair_id"] = c_long["pair_id"].values
             c_attached["match_weight"] = c_long["match_weight"].values
             matched_t_list.append(mt)
             matched_c_long_list.append(c_attached)
 
         if not matched_t_list:
-            balance_by_bucket[bucket] = {"smd_before": smd_before, "smd_after": pd.DataFrame()}
+            balance_by_bucket[bucket] = {
+                "smd_before": smd_before,
+                "smd_after": pd.DataFrame(),
+            }
             diagnostics_by_bucket[bucket] = bucket_diag
             continue
 
@@ -927,12 +1105,17 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
         matched_c_long = pd.concat(matched_c_long_list, ignore_index=True)
 
         # --- Balance after ---
-        matched_all = pd.concat([
-            matched_t.assign(_dose_treated=True, match_weight=1.0),
-            matched_c_long.assign(_dose_treated=False),
-        ], ignore_index=True)
+        matched_all = pd.concat(
+            [
+                matched_t.assign(_dose_treated=True, match_weight=1.0),
+                matched_c_long.assign(_dose_treated=False),
+            ],
+            ignore_index=True,
+        )
         smd_after = compute_weighted_smd(
-            matched_all, "_dose_treated", available_covs,
+            matched_all,
+            "_dose_treated",
+            available_covs,
             matched_all["match_weight"].values,
         )
 
@@ -941,28 +1124,38 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
 
         # --- ATT per outcome ---
         for outcome in OUTCOME_VARS:
-            if outcome not in matched_t.columns or outcome not in matched_c_long.columns:
+            if (
+                outcome not in matched_t.columns
+                or outcome not in matched_c_long.columns
+            ):
                 continue
 
             t_df = matched_t[["pair_id", outcome]].copy()
             c_df = matched_c_long[["pair_id", outcome, "match_weight"]].copy()
             t_df = t_df[np.isfinite(t_df[outcome].values)]
-            c_df = c_df[np.isfinite(c_df[outcome].values) & (c_df["match_weight"].values > 0)]
+            c_df = c_df[
+                np.isfinite(c_df[outcome].values) & (c_df["match_weight"].values > 0)
+            ]
 
             if t_df.empty or c_df.empty:
                 continue
 
             c_df["w_y"] = c_df[outcome] * c_df["match_weight"]
-            ctrl_mean = c_df.groupby("pair_id").agg(
-                control_sum=("w_y", "sum"),
-                wsum=("match_weight", "sum"),
-                k_used=(outcome, "size"),
-            ).reset_index()
+            ctrl_mean = (
+                c_df.groupby("pair_id")
+                .agg(
+                    control_sum=("w_y", "sum"),
+                    wsum=("match_weight", "sum"),
+                    k_used=(outcome, "size"),
+                )
+                .reset_index()
+            )
             ctrl_mean["control_mean"] = ctrl_mean["control_sum"] / ctrl_mean["wsum"]
 
             merged = t_df.merge(
                 ctrl_mean[["pair_id", "control_mean", "k_used"]],
-                on="pair_id", how="inner",
+                on="pair_id",
+                how="inner",
             )
             if merged.empty:
                 continue
@@ -970,16 +1163,18 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
             diffs = merged[outcome].values - merged["control_mean"].values
             att, ci_lo, ci_hi = bootstrap_mean_ci(diffs, n_boot=1000)
 
-            att_rows.append({
-                "bucket": bucket,
-                "outcome": outcome,
-                "att": att,
-                "ci_lower": ci_lo,
-                "ci_upper": ci_hi,
-                "n_treated": int(len(merged)),
-                "n_matched_controls": int(merged["k_used"].sum()),
-                "avg_k_used": float(np.nanmean(merged["k_used"].values)),
-            })
+            att_rows.append(
+                {
+                    "bucket": bucket,
+                    "outcome": outcome,
+                    "att": att,
+                    "ci_lower": ci_lo,
+                    "ci_upper": ci_hi,
+                    "n_treated": int(len(merged)),
+                    "n_matched_controls": int(merged["k_used"].sum()),
+                    "avg_k_used": float(np.nanmean(merged["k_used"].values)),
+                }
+            )
 
     return {
         "att_by_bucket": pd.DataFrame(att_rows),

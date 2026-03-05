@@ -31,7 +31,9 @@ CONTINUOUS_CONTROLS = [
     "PcpRate",
     "log_adv",
     "duration_mins",
-    "start_mins",
+    "dailyvol",
+    "avgSpd",
+    "ivlSpdVsAvgSpd",
 ]
 
 CATEGORICAL_FE = ["Strategy"]
@@ -49,14 +51,16 @@ OUTCOME_VARS = [
 ]
 
 # For PSM / matching
-N_NEIGHBORS = 10
+N_NEIGHBORS = 5
 EXACT_MATCH_COLS = ["Strategy"]
 PSM_COVARIATES = [
     "log_qtyOverADV",
     "PcpRate",
     "log_adv",
     "duration_mins",
-    "start_mins",
+    "dailyvol",
+    "avgSpd",
+    "ivlSpdVsAvgSpd",
 ]
 
 # ---------------------------------------------------------------------------
