@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.neighbors import NearestNeighbors
 
 from config import (
     CATEGORICAL_FE,
@@ -28,16 +27,11 @@ from config import (
     TREATMENT_COLS_ITT,
 )
 from diagnostics import (
-    covariate_smd_by_stratum,
-    e_value,
-    leave_one_out_att,
-    match_quality_by_stratum,
-    prognostic_scores,
-    ps_model_auroc,
-    ps_specification_sensitivity,
-    rosenbaum_bounds,
-    stratum_att_decomposition,
-    variance_ratio,
+    compute_match_retention,
+    compute_strata_counts,
+    dose_strata_diagnostics,
+    pre_matching_ps_diagnostics,
+    run_psm_diagnostics,
 )
 from utils import (
     bootstrap_mean_ci,
@@ -153,36 +147,6 @@ def stratified_sample(
             parts.append(grp.sample(n=n_grp, random_state=rng))
 
     return pd.concat(parts, axis=0)
-
-
-def common_support_summary(ps, treat_mask):
-    ps_t = ps[treat_mask]
-    ps_c = ps[~treat_mask]
-    lo_c, hi_c = np.min(ps_c), np.max(ps_c)
-    outside = (ps_t < lo_c) | (ps_t > hi_c)
-    return {
-        "control_min": float(lo_c),
-        "control_max": float(hi_c),
-        "treated_outside_range_n": int(outside.sum()),
-        "treated_outside_range_pct": float(100 * outside.mean())
-        if len(ps_t)
-        else np.nan,
-    }
-
-
-def quantiles(x):
-    q = np.nanpercentile(x, [0, 1, 5, 10, 25, 50, 75, 90, 95, 99, 100])
-    keys = ["min", "p1", "p5", "p10", "p25", "p50", "p75", "p90", "p95", "p99", "max"]
-    return {k: float(v) for k, v in zip(keys, q)}
-
-
-def nearest_distance_summary(score, treat_mask):
-    s_t = score[treat_mask].reshape(-1, 1)
-    s_c = score[~treat_mask].reshape(-1, 1)
-    nn = NearestNeighbors(n_neighbors=1).fit(s_c)
-    dist, _ = nn.kneighbors(s_t)
-    dist = dist.ravel()
-    return {**quantiles(dist), "mean": float(np.mean(dist)), "n": int(len(dist))}
 
 
 def descriptive_summary(df):
@@ -430,55 +394,15 @@ def run_psm_analysis(
     work["ps_logit"] = np.log(p / (1 - p))
 
     # Propensity score diagnostics
-    tmask = work[treatment_col].astype(bool).values
-    results["common_support_ps"] = common_support_summary(work["ps"].values, tmask)
-    results["common_support_ps_logit"] = common_support_summary(
-        work["ps_logit"].values, tmask
-    )
-    ps_diag = work["ps"].values
-    ps_logit_diag = work["ps_logit"].values
-    tr_diag = work[treatment_col].astype(bool).values
-    results["ps_quantiles_before"] = {
-        "treated": {**quantiles(ps_diag[tr_diag]), "n": int(np.sum(tr_diag))},
-        "control": {**quantiles(ps_diag[~tr_diag]), "n": int(np.sum(~tr_diag))},
-    }
-
-    results["ps_logit_quantiles_before"] = {
-        "treated": {**quantiles(ps_logit_diag[tr_diag]), "n": int(np.sum(tr_diag))},
-        "control": {**quantiles(ps_logit_diag[~tr_diag]), "n": int(np.sum(~tr_diag))},
-    }
-    results["nn_distance_ps_before"] = nearest_distance_summary(
-        work["ps"].values, tmask
-    )
-    results["nn_distance_ps_logit_before"] = nearest_distance_summary(
-        work["ps_logit"].values, tmask
-    )
+    ps_diag = pre_matching_ps_diagnostics(work, treatment_col)
+    results.update(ps_diag)
 
     if exact_cols:
-        g_before = work.groupby(exact_cols, dropna=False, observed=True)[treatment_col]
-        strata_counts_before = g_before.agg(
-            size="size", n_treated=lambda s: int(s.astype(bool).sum())
-        ).reset_index()
-        strata_counts_before["n_control"] = (
-            strata_counts_before["size"] - strata_counts_before["n_treated"]
-        )
-        strata_counts_before["mean"] = (
-            strata_counts_before["n_treated"] / strata_counts_before["size"]
+        strata_counts_before, overlap_before = compute_strata_counts(
+            work, exact_cols, treatment_col
         )
         results["strata_counts_before"] = strata_counts_before
-        overlap_mask = (strata_counts_before["n_treated"] > 0) & (
-            strata_counts_before["n_control"] > 0
-        )
-        n_strata = int(len(strata_counts_before))
-        n_overlap = int(overlap_mask.sum())
-
-        results["overlap_summary_before"] = {
-            "n_strata": n_strata,
-            "n_overlap_strata": n_overlap,
-            "pct_overlap_strata": float(100 * n_overlap / n_strata)
-            if n_strata
-            else np.nan,
-        }
+        results["overlap_summary_before"] = overlap_before
 
     results["smd_before"] = compute_smd(work, treatment_col, available_covs)
 
@@ -630,58 +554,19 @@ def run_psm_analysis(
         )
 
         if exact_cols:
-            g_after = matched_all_long.groupby(exact_cols, dropna=False, observed=True)[
-                treatment_col
-            ]
-            strata_counts_after = g_after.agg(
-                size="size", n_treated=lambda s: int(s.astype(bool).sum())
-            ).reset_index()
-            strata_counts_after["n_control"] = (
-                strata_counts_after["size"] - strata_counts_after["n_treated"]
-            )
-            strata_counts_after["mean"] = (
-                strata_counts_after["n_treated"] / strata_counts_after["size"]
+            strata_counts_after, overlap_after = compute_strata_counts(
+                matched_all_long, exact_cols, treatment_col
             )
             results["strata_counts_after"] = strata_counts_after
-
-            overlap_mask_a = (strata_counts_after["n_treated"] > 0) & (
-                strata_counts_after["n_control"] > 0
-            )
-            n_strata_a = int(len(strata_counts_after))
-            n_overlap_a = int(overlap_mask_a.sum())
-
-            results["overlap_summary_after"] = {
-                "n_strata": n_strata_a,
-                "n_overlap_strata": n_overlap_a,
-                "pct_overlap_strata": float(100.0 * n_overlap_a / n_strata_a)
-                if n_strata_a
-                else np.nan,
-            }
+            results["overlap_summary_after"] = overlap_after
 
             if (
                 not results["strata_counts_before"].empty
                 and not strata_counts_after.empty
             ):
-                before_sizes = results["strata_counts_before"][
-                    exact_cols + ["size", "n_treated"]
-                ].rename(
-                    columns={"size": "size_before", "n_treated": "n_treated_before"}
+                results["match_retention_by_stratum"] = compute_match_retention(
+                    results["strata_counts_before"], matched_t, exact_cols
                 )
-                treated_after = (
-                    matched_t.groupby(exact_cols, dropna=False, observed=True)
-                    .size()
-                    .reset_index(name="treated_after")
-                )
-                retention = before_sizes.merge(treated_after, on=exact_cols, how="left")
-                retention["treated_after"] = (
-                    retention["treated_after"].fillna(0).astype(int)
-                )
-                retention["matched_retention_pct"] = np.where(
-                    retention["n_treated_before"] > 0,
-                    100.0 * retention["treated_after"] / retention["n_treated_before"],
-                    np.nan,
-                )
-                results["match_retention_by_stratum"] = retention
             else:
                 results["match_retention_by_stratum"] = pd.DataFrame()
         results["smd_after_nn"] = compute_weighted_smd(
@@ -757,168 +642,6 @@ def run_psm_analysis(
             results["match_retention_by_stratum"] = pd.DataFrame()
 
     return results
-
-
-def run_psm_diagnostics(df, psm_results, treatment_col="hasCRB"):
-    """Run all PSM diagnostics given a completed PSM analysis.
-
-    Parameters
-    ----------
-    df : DataFrame - the full dataset (for specification sensitivity)
-    psm_results : dict - output of run_psm_analysis()
-    treatment_col : str
-
-    Returns
-    -------
-    dict with diagnostic results
-    """
-    matched_t = psm_results.get("matched_t", pd.DataFrame())
-    matched_c_long = psm_results.get("matched_c_long", pd.DataFrame())
-    exact_cols = [c for c in EXACT_MATCH_COLS if c in df.columns]
-    available_covs = [c for c in PSM_COVARIATES if c in df.columns]
-
-    diag = {}
-
-    # 1. Stratum ATT decomposition
-    print("    Stratum ATT decomposition ...")
-    diag["stratum_att"] = stratum_att_decomposition(
-        matched_t,
-        matched_c_long,
-        exact_cols,
-        OUTCOME_VARS,
-    )
-
-    # 2. Leave-one-out
-    print("    Leave-one-out ...")
-    diag["leave_one_out"] = leave_one_out_att(
-        matched_t,
-        matched_c_long,
-        exact_cols,
-        OUTCOME_VARS,
-    )
-
-    # 3. AUROC
-    print("    AUROC ...")
-    ps = psm_results.get("propensity_scores", pd.Series(dtype=float))
-    if not ps.empty and treatment_col in df.columns:
-        treat_vals = (
-            df.loc[ps.index, treatment_col].astype(int).values
-            if ps.index.isin(df.index).all()
-            else np.array([])
-        )
-        if len(treat_vals) == len(ps):
-            diag["auroc"] = ps_model_auroc(ps.values, treat_vals)
-        else:
-            diag["auroc"] = {"auroc": np.nan, "n_treated": 0, "n_control": 0}
-    else:
-        diag["auroc"] = {"auroc": np.nan, "n_treated": 0, "n_control": 0}
-
-    # 4. Variance ratio (before and after)
-    print("    Variance ratio ...")
-    needed = available_covs + [treatment_col]
-    work = df.dropna(subset=[c for c in needed if c in df.columns])
-    diag["variance_ratio_before"] = (
-        variance_ratio(work, treatment_col, available_covs)
-        if not work.empty
-        else pd.DataFrame()
-    )
-
-    if not matched_t.empty and not matched_c_long.empty:
-        matched_all = pd.concat(
-            [
-                matched_t.assign(**{treatment_col: True, "match_weight": 1.0}),
-                matched_c_long.assign(**{treatment_col: False}),
-            ],
-            ignore_index=True,
-        )
-        diag["variance_ratio_after"] = variance_ratio(
-            matched_all,
-            treatment_col,
-            available_covs,
-            weights=matched_all["match_weight"].values,
-        )
-    else:
-        diag["variance_ratio_after"] = pd.DataFrame()
-
-    # 5. SMD by stratum
-    print("    SMD by stratum ...")
-    diag["smd_by_stratum"] = (
-        covariate_smd_by_stratum(
-            work,
-            treatment_col,
-            available_covs,
-            exact_cols,
-        )
-        if not work.empty
-        else pd.DataFrame()
-    )
-
-    # 6. Prognostic scores
-    print("    Prognostic scores ...")
-    diag["prognostic"] = (
-        prognostic_scores(
-            work,
-            treatment_col,
-            available_covs,
-            "tempImpactBps",
-        )
-        if not work.empty and "tempImpactBps" in work.columns
-        else pd.DataFrame()
-    )
-
-    # 10. Match quality by stratum
-    print("    Match Quality by stratum ...")
-    diag["match_quality"] = match_quality_by_stratum(
-        matched_t,
-        matched_c_long,
-        exact_cols,
-    )
-
-    # 8. Rosenbaum bounds (on tempImpactBps pair diffs)
-    print("    Rosenbaum bounds ...")
-    if (
-        not matched_t.empty
-        and not matched_c_long.empty
-        and "tempImpactBps" in matched_t.columns
-    ):
-        from diagnostics import _compute_pair_diffs
-
-        pair_diffs = _compute_pair_diffs(matched_t, matched_c_long, "tempImpactBps")
-        if not pair_diffs.empty:
-            diag["rosenbaum_bounds"] = rosenbaum_bounds(pair_diffs["diff"].values)
-        else:
-            diag["rosenbaum_bounds"] = pd.DataFrame()
-    else:
-        diag["rosenbaum_bounds"] = pd.DataFrame()
-
-    # 9. E-values (for each outcome)
-    print("    E-values ...")
-    nn_outcomes = psm_results.get("nn_outcomes", pd.DataFrame())
-    e_vals = {}
-    if not nn_outcomes.empty:
-        for _, row in nn_outcomes.iterrows():
-            att_val = row["diff"]
-            se_approx = (row["diff_ci_upper"] - row["diff_ci_lower"]) / (2 * 1.96)
-            if se_approx > 0:
-                e_vals[row["outcome"]] = e_value(att_val, se_approx)
-    diag["e_values"] = e_vals
-
-    # 7. PS specification sensitivity
-    print("    PS Specification sensitivity ...")
-    if not df.empty and treatment_col in df.columns and "tempImpactBps" in df.columns:
-        diag["spec_sensitivity"] = ps_specification_sensitivity(
-            df,
-            treatment_col,
-            available_covs,
-            exact_cols,
-            "tempImpactBps",
-            caliper_mult=0.2,
-            n_neighbors=N_NEIGHBORS,
-        )
-    else:
-        diag["spec_sensitivity"] = pd.DataFrame()
-
-    return diag
 
 
 # ===================================================================
@@ -1010,20 +733,7 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
         # --- Strata diagnostics ---
         bucket_diag = {}
         if exact_cols:
-            g_ct = work.groupby(exact_cols, dropna=False, observed=True)[
-                "_dose_treated"
-            ]
-            sc = g_ct.agg(size="size", n_treated=lambda s: int(s.sum())).reset_index()
-            sc["n_control"] = sc["size"] - sc["n_treated"]
-            bucket_diag["strata_counts"] = sc
-            overlap = (sc["n_treated"] > 0) & (sc["n_control"] > 0)
-            bucket_diag["overlap_summary"] = {
-                "n_strata": int(len(sc)),
-                "n_overlap": int(overlap.sum()),
-                "pct_overlap": float(100 * overlap.sum() / len(sc))
-                if len(sc)
-                else np.nan,
-            }
+            bucket_diag = dose_strata_diagnostics(work, exact_cols, "_dose_treated")
 
         # --- k:1 NN matching within strata (same as section C) ---
         matched_t_list = []

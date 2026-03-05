@@ -1378,7 +1378,8 @@ class TestRunPSMDiagnostics:
     """run_psm_diagnostics orchestrates all diagnostic functions."""
 
     def test_produces_all_keys(self, small_parent_df):
-        from parent_analysis import run_psm_analysis, run_psm_diagnostics
+        from parent_analysis import run_psm_analysis
+        from diagnostics import run_psm_diagnostics
 
         psm_results = run_psm_analysis(small_parent_df, treatment_col="hasCRB")
         diag = run_psm_diagnostics(small_parent_df, psm_results)
@@ -1393,7 +1394,7 @@ class TestRunPSMDiagnostics:
             assert key in diag, f"Missing key: {key}"
 
     def test_handles_empty_psm(self):
-        from parent_analysis import run_psm_diagnostics
+        from diagnostics import run_psm_diagnostics
 
         empty_psm = {
             "matched_t": pd.DataFrame(),

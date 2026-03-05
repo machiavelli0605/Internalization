@@ -12,12 +12,19 @@ Diagnostics:
   8. Rosenbaum bounds
   9. E-value
   10. Match quality by stratum
+  11. Common support summary
+  12. Pre-matching PS diagnostics
+  13. Strata counts & overlap
+  14. Match retention by stratum
+  15. Run all PSM diagnostics
+  16. ATT heterogeneity scan
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from sklearn.neighbors import NearestNeighbors
 
 from utils import bootstrap_mean_ci
 
@@ -745,3 +752,468 @@ def ps_specification_sensitivity(
         )
 
     return pd.DataFrame(rows)
+
+
+# ===================================================================
+# 11. Common support & PS distribution helpers
+# ===================================================================
+
+
+def quantiles(x):
+    """Compute standard quantile summary for an array."""
+    q = np.nanpercentile(x, [0, 1, 5, 10, 25, 50, 75, 90, 95, 99, 100])
+    keys = ["min", "p1", "p5", "p10", "p25", "p50", "p75", "p90", "p95", "p99", "max"]
+    return {k: float(v) for k, v in zip(keys, q)}
+
+
+def common_support_summary(ps, treat_mask):
+    """Summarize common support: control PS range and treated orders outside it."""
+    ps_t = ps[treat_mask]
+    ps_c = ps[~treat_mask]
+    lo_c, hi_c = np.min(ps_c), np.max(ps_c)
+    outside = (ps_t < lo_c) | (ps_t > hi_c)
+    return {
+        "control_min": float(lo_c),
+        "control_max": float(hi_c),
+        "treated_outside_range_n": int(outside.sum()),
+        "treated_outside_range_pct": float(100 * outside.mean())
+        if len(ps_t)
+        else np.nan,
+    }
+
+
+def nearest_distance_summary(score, treat_mask):
+    """Quantile summary of nearest-neighbor distances (treated -> control)."""
+    s_t = score[treat_mask].reshape(-1, 1)
+    s_c = score[~treat_mask].reshape(-1, 1)
+    nn = NearestNeighbors(n_neighbors=1).fit(s_c)
+    dist, _ = nn.kneighbors(s_t)
+    dist = dist.ravel()
+    return {**quantiles(dist), "mean": float(np.mean(dist)), "n": int(len(dist))}
+
+
+# ===================================================================
+# 12. Pre-matching PS diagnostics
+# ===================================================================
+
+
+def pre_matching_ps_diagnostics(work, treatment_col):
+    """Compute pre-matching propensity score diagnostics.
+
+    Parameters
+    ----------
+    work : DataFrame -- must have 'ps' and 'ps_logit' columns
+    treatment_col : str
+
+    Returns
+    -------
+    dict with keys: common_support_ps, common_support_ps_logit,
+        ps_quantiles_before, ps_logit_quantiles_before,
+        nn_distance_ps_before, nn_distance_ps_logit_before
+    """
+    tmask = work[treatment_col].astype(bool).values
+    ps_vals = work["ps"].values
+    ps_logit_vals = work["ps_logit"].values
+    n_t = int(np.sum(tmask))
+    n_c = int(np.sum(~tmask))
+
+    return {
+        "common_support_ps": common_support_summary(ps_vals, tmask),
+        "common_support_ps_logit": common_support_summary(ps_logit_vals, tmask),
+        "ps_quantiles_before": {
+            "treated": {**quantiles(ps_vals[tmask]), "n": n_t},
+            "control": {**quantiles(ps_vals[~tmask]), "n": n_c},
+        },
+        "ps_logit_quantiles_before": {
+            "treated": {**quantiles(ps_logit_vals[tmask]), "n": n_t},
+            "control": {**quantiles(ps_logit_vals[~tmask]), "n": n_c},
+        },
+        "nn_distance_ps_before": nearest_distance_summary(ps_vals, tmask),
+        "nn_distance_ps_logit_before": nearest_distance_summary(
+            ps_logit_vals, tmask
+        ),
+    }
+
+
+# ===================================================================
+# 13. Strata counts & overlap
+# ===================================================================
+
+
+def compute_strata_counts(work, exact_cols, treatment_col):
+    """Compute strata counts and overlap summary.
+
+    Returns
+    -------
+    (strata_counts_df, overlap_summary_dict)
+    """
+    g = work.groupby(exact_cols, dropna=False, observed=True)[treatment_col]
+    sc = g.agg(
+        size="size", n_treated=lambda s: int(s.astype(bool).sum())
+    ).reset_index()
+    sc["n_control"] = sc["size"] - sc["n_treated"]
+    sc["mean"] = sc["n_treated"] / sc["size"]
+
+    overlap_mask = (sc["n_treated"] > 0) & (sc["n_control"] > 0)
+    n_strata = int(len(sc))
+    n_overlap = int(overlap_mask.sum())
+    overlap_summary = {
+        "n_strata": n_strata,
+        "n_overlap_strata": n_overlap,
+        "pct_overlap_strata": float(100 * n_overlap / n_strata)
+        if n_strata
+        else np.nan,
+    }
+
+    return sc, overlap_summary
+
+
+# ===================================================================
+# 14. Match retention by stratum
+# ===================================================================
+
+
+def compute_match_retention(strata_counts_before, matched_t, exact_cols):
+    """Compute match retention by stratum.
+
+    Returns DataFrame with before/after treated counts and retention percentage.
+    """
+    if strata_counts_before.empty:
+        return pd.DataFrame()
+
+    before_sizes = strata_counts_before[
+        exact_cols + ["size", "n_treated"]
+    ].rename(columns={"size": "size_before", "n_treated": "n_treated_before"})
+    treated_after = (
+        matched_t.groupby(exact_cols, dropna=False, observed=True)
+        .size()
+        .reset_index(name="treated_after")
+    )
+    retention = before_sizes.merge(treated_after, on=exact_cols, how="left")
+    retention["treated_after"] = retention["treated_after"].fillna(0).astype(int)
+    retention["matched_retention_pct"] = np.where(
+        retention["n_treated_before"] > 0,
+        100.0 * retention["treated_after"] / retention["n_treated_before"],
+        np.nan,
+    )
+    return retention
+
+
+# ===================================================================
+# 15. Dose-response strata diagnostics
+# ===================================================================
+
+
+def dose_strata_diagnostics(work, exact_cols, treatment_col):
+    """Compute strata diagnostics for a dose-response bucket.
+
+    Returns dict with 'strata_counts' and 'overlap_summary'.
+    """
+    g_ct = work.groupby(exact_cols, dropna=False, observed=True)[treatment_col]
+    sc = g_ct.agg(
+        size="size", n_treated=lambda s: int(s.sum())
+    ).reset_index()
+    sc["n_control"] = sc["size"] - sc["n_treated"]
+    overlap = (sc["n_treated"] > 0) & (sc["n_control"] > 0)
+    return {
+        "strata_counts": sc,
+        "overlap_summary": {
+            "n_strata": int(len(sc)),
+            "n_overlap": int(overlap.sum()),
+            "pct_overlap": float(100 * overlap.sum() / len(sc))
+            if len(sc)
+            else np.nan,
+        },
+    }
+
+
+# ===================================================================
+# 16. Run all PSM diagnostics
+# ===================================================================
+
+
+def run_psm_diagnostics(df, psm_results, treatment_col="hasCRB"):
+    """Run all PSM diagnostics given a completed PSM analysis.
+
+    Parameters
+    ----------
+    df : DataFrame - the full dataset (for specification sensitivity)
+    psm_results : dict - output of run_psm_analysis()
+    treatment_col : str
+
+    Returns
+    -------
+    dict with diagnostic results
+    """
+    from config import EXACT_MATCH_COLS, N_NEIGHBORS, OUTCOME_VARS, PSM_COVARIATES
+
+    matched_t = psm_results.get("matched_t", pd.DataFrame())
+    matched_c_long = psm_results.get("matched_c_long", pd.DataFrame())
+    exact_cols = [c for c in EXACT_MATCH_COLS if c in df.columns]
+    available_covs = [c for c in PSM_COVARIATES if c in df.columns]
+
+    diag = {}
+
+    # 1. Stratum ATT decomposition
+    print("    Stratum ATT decomposition ...")
+    diag["stratum_att"] = stratum_att_decomposition(
+        matched_t,
+        matched_c_long,
+        exact_cols,
+        OUTCOME_VARS,
+    )
+
+    # 2. Leave-one-out
+    print("    Leave-one-out ...")
+    diag["leave_one_out"] = leave_one_out_att(
+        matched_t,
+        matched_c_long,
+        exact_cols,
+        OUTCOME_VARS,
+    )
+
+    # 3. AUROC
+    print("    AUROC ...")
+    ps = psm_results.get("propensity_scores", pd.Series(dtype=float))
+    if not ps.empty and treatment_col in df.columns:
+        treat_vals = (
+            df.loc[ps.index, treatment_col].astype(int).values
+            if ps.index.isin(df.index).all()
+            else np.array([])
+        )
+        if len(treat_vals) == len(ps):
+            diag["auroc"] = ps_model_auroc(ps.values, treat_vals)
+        else:
+            diag["auroc"] = {"auroc": np.nan, "n_treated": 0, "n_control": 0}
+    else:
+        diag["auroc"] = {"auroc": np.nan, "n_treated": 0, "n_control": 0}
+
+    # 4. Variance ratio (before and after)
+    print("    Variance ratio ...")
+    needed = available_covs + [treatment_col]
+    work = df.dropna(subset=[c for c in needed if c in df.columns])
+    diag["variance_ratio_before"] = (
+        variance_ratio(work, treatment_col, available_covs)
+        if not work.empty
+        else pd.DataFrame()
+    )
+
+    if not matched_t.empty and not matched_c_long.empty:
+        matched_all = pd.concat(
+            [
+                matched_t.assign(**{treatment_col: True, "match_weight": 1.0}),
+                matched_c_long.assign(**{treatment_col: False}),
+            ],
+            ignore_index=True,
+        )
+        diag["variance_ratio_after"] = variance_ratio(
+            matched_all,
+            treatment_col,
+            available_covs,
+            weights=matched_all["match_weight"].values,
+        )
+    else:
+        diag["variance_ratio_after"] = pd.DataFrame()
+
+    # 5. SMD by stratum
+    print("    SMD by stratum ...")
+    diag["smd_by_stratum"] = (
+        covariate_smd_by_stratum(
+            work,
+            treatment_col,
+            available_covs,
+            exact_cols,
+        )
+        if not work.empty
+        else pd.DataFrame()
+    )
+
+    # 6. Prognostic scores
+    print("    Prognostic scores ...")
+    diag["prognostic"] = (
+        prognostic_scores(
+            work,
+            treatment_col,
+            available_covs,
+            "tempImpactBps",
+        )
+        if not work.empty and "tempImpactBps" in work.columns
+        else pd.DataFrame()
+    )
+
+    # 10. Match quality by stratum
+    print("    Match Quality by stratum ...")
+    diag["match_quality"] = match_quality_by_stratum(
+        matched_t,
+        matched_c_long,
+        exact_cols,
+    )
+
+    # 8. Rosenbaum bounds (on tempImpactBps pair diffs)
+    print("    Rosenbaum bounds ...")
+    if (
+        not matched_t.empty
+        and not matched_c_long.empty
+        and "tempImpactBps" in matched_t.columns
+    ):
+        pair_diffs = _compute_pair_diffs(matched_t, matched_c_long, "tempImpactBps")
+        if not pair_diffs.empty:
+            diag["rosenbaum_bounds"] = rosenbaum_bounds(pair_diffs["diff"].values)
+        else:
+            diag["rosenbaum_bounds"] = pd.DataFrame()
+    else:
+        diag["rosenbaum_bounds"] = pd.DataFrame()
+
+    # 9. E-values (for each outcome)
+    print("    E-values ...")
+    nn_outcomes = psm_results.get("nn_outcomes", pd.DataFrame())
+    e_vals = {}
+    if not nn_outcomes.empty:
+        for _, row in nn_outcomes.iterrows():
+            att_val = row["diff"]
+            se_approx = (row["diff_ci_upper"] - row["diff_ci_lower"]) / (2 * 1.96)
+            if se_approx > 0:
+                e_vals[row["outcome"]] = e_value(att_val, se_approx)
+    diag["e_values"] = e_vals
+
+    # 7. PS specification sensitivity
+    print("    PS Specification sensitivity ...")
+    if not df.empty and treatment_col in df.columns and "tempImpactBps" in df.columns:
+        diag["spec_sensitivity"] = ps_specification_sensitivity(
+            df,
+            treatment_col,
+            available_covs,
+            exact_cols,
+            "tempImpactBps",
+            caliper_mult=0.2,
+            n_neighbors=N_NEIGHBORS,
+        )
+    else:
+        diag["spec_sensitivity"] = pd.DataFrame()
+
+    return diag
+
+
+# ===================================================================
+# 17. ATT heterogeneity scan
+# ===================================================================
+
+
+def att_heterogeneity_scan(
+    matched_t,
+    matched_c_long,
+    outcome,
+    skip_cols=None,
+    max_categorical_unique=50,
+    n_quantile_bins=4,
+    min_group_size=30,
+    corr_threshold=0.05,
+):
+    """Scan all columns in matched_t for ATT heterogeneity on a given outcome.
+
+    For each column not in skip_cols:
+      - Categorical (<=max_categorical_unique unique values): group pair diffs
+        by value, report per-group ATT and count.
+      - Continuous (>max_categorical_unique unique values): report correlation
+        with pair diffs, then bin into quantiles and report per-bin ATT.
+
+    Parameters
+    ----------
+    matched_t : DataFrame - matched treated observations (must have pair_id)
+    matched_c_long : DataFrame - matched controls (must have pair_id, match_weight)
+    outcome : str - outcome variable to compute diffs on
+    skip_cols : list[str] | None - columns to exclude from the scan
+    max_categorical_unique : int - threshold to distinguish categorical vs continuous
+    n_quantile_bins : int - number of quantile bins for continuous columns
+    min_group_size : int - minimum pairs in a group to report
+    corr_threshold : float - minimum |correlation| to include continuous columns
+
+    Returns
+    -------
+    dict with keys:
+      - "categorical": DataFrame (column, value, att, count, std)
+      - "continuous": DataFrame (column, correlation, bin, att, count, std)
+    """
+    if matched_t.empty or matched_c_long.empty:
+        return {"categorical": pd.DataFrame(), "continuous": pd.DataFrame()}
+
+    pair_diffs = _compute_pair_diffs(matched_t, matched_c_long, outcome)
+    if pair_diffs.empty:
+        return {"categorical": pd.DataFrame(), "continuous": pd.DataFrame()}
+
+    # Attach all matched_t columns for slicing
+    extra_cols = [c for c in matched_t.columns if c not in pair_diffs.columns]
+    pair_diffs = pair_diffs.merge(
+        matched_t[["pair_id"] + extra_cols], on="pair_id", how="left"
+    )
+
+    default_skip = {"pair_id", "diff", "control_mean", outcome, "ps", "ps_logit",
+                    "match_weight"}
+    if skip_cols:
+        default_skip |= set(skip_cols)
+
+    candidates = [c for c in pair_diffs.columns if c not in default_skip]
+    diffs = pair_diffs["diff"].values
+
+    cat_rows = []
+    cont_rows = []
+
+    for col in candidates:
+        vals = pair_diffs[col]
+        n_unique = vals.nunique()
+        if n_unique < 2:
+            continue
+
+        if n_unique <= max_categorical_unique:
+            # Categorical scan
+            for value, grp in pair_diffs.groupby(col, observed=True):
+                if len(grp) < min_group_size:
+                    continue
+                g_diffs = grp["diff"].values
+                cat_rows.append({
+                    "column": col,
+                    "value": str(value),
+                    "att": float(np.nanmean(g_diffs)),
+                    "count": len(g_diffs),
+                    "std": float(np.nanstd(g_diffs, ddof=1))
+                    if len(g_diffs) > 1 else np.nan,
+                })
+        else:
+            # Continuous scan
+            col_vals = vals.values.astype(float)
+            valid = np.isfinite(col_vals) & np.isfinite(diffs)
+            if valid.sum() < min_group_size:
+                continue
+
+            corr = float(np.corrcoef(col_vals[valid], diffs[valid])[0, 1])
+            if abs(corr) < corr_threshold:
+                continue
+
+            # Bin into quantiles
+            try:
+                pair_diffs["_bin"] = pd.qcut(
+                    vals, q=n_quantile_bins, duplicates="drop"
+                )
+            except ValueError:
+                continue
+
+            for bin_label, grp in pair_diffs.groupby("_bin", observed=True):
+                if len(grp) < min_group_size:
+                    continue
+                g_diffs = grp["diff"].values
+                cont_rows.append({
+                    "column": col,
+                    "correlation": corr,
+                    "bin": str(bin_label),
+                    "att": float(np.nanmean(g_diffs)),
+                    "count": len(g_diffs),
+                    "std": float(np.nanstd(g_diffs, ddof=1))
+                    if len(g_diffs) > 1 else np.nan,
+                })
+
+            pair_diffs.drop(columns=["_bin"], inplace=True)
+
+    return {
+        "categorical": pd.DataFrame(cat_rows),
+        "continuous": pd.DataFrame(cont_rows),
+    }
