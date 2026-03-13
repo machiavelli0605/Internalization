@@ -7,10 +7,10 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Data paths – update these to point at your actual parquet files
 # ---------------------------------------------------------------------------
-PARENT_DATA_PATH = Path("../data/parent_orders.parquet")
-EXECUTION_DATA_PATH = Path("../data/executions.parquet")
+PARENT_DATA_PATH = Path("data/parent_orders.parquet")
+EXECUTION_DATA_PATH = Path("data/executions.parquet")
 
-OUTPUT_DIR = Path("../output")
+OUTPUT_DIR = Path("output")
 RESULT_DIR = OUTPUT_DIR / "results"
 RESULT_DIR.mkdir(parents=True, exist_ok=True)
 PLOT_DIR = OUTPUT_DIR / "plots"
@@ -30,6 +30,7 @@ CONTINUOUS_CONTROLS = [
     "log_qtyOverADV",
     "PcpRate",
     "log_adv",
+    "start_mins",
     "duration_mins",
     "dailyvol",
     "avgSpd",
@@ -47,16 +48,16 @@ OUTCOME_VARS = [
     "permImpact5mBps",
     "permImpact15mBps",
     "permImpact60mBps",
-    "ArrivalSlippageBps",
 ]
 
 # For PSM / matching
 N_NEIGHBORS = 5
-EXACT_MATCH_COLS = ["Strategy"]
+EXACT_MATCH_COLS = ["Strategy", "RiskAversion"]
 PSM_COVARIATES = [
     "log_qtyOverADV",
     "PcpRate",
     "log_adv",
+    "start_mins",
     "duration_mins",
     "dailyvol",
     "avgSpd",

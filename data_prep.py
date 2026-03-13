@@ -37,12 +37,12 @@ def _filter_auctions(df):
 # ===================================================================
 
 
-def load_parent_data(path=None, exclude_auctions=False):
+def load_parent_data(path=None, exclude_auctions=False, filters=None):
     """Load parent order parquet and derive all analysis columns."""
     path = path or PARENT_DATA_PATH
     if exclude_auctions:
         path = get_no_auction_path(path)
-    df = pd.read_parquet(path, engine="pyarrow")
+    df = pd.read_parquet(path, engine="pyarrow", filters=filters)
     df = derive_parent_columns(df)
     return df
 
@@ -54,6 +54,9 @@ def derive_parent_columns(df):
     Returns the same DataFrame with new columns appended.
     """
     df = df.copy()
+
+    # -- Strategy --------------------------------------------------------
+    df.loc[:, "Strategy"] += df.loc[:, "saoStrategy"]
 
     # -- Normalize isInt to boolean ----------------------------------------
     if "isInt" in df.columns:

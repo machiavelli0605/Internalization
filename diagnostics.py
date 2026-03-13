@@ -829,9 +829,7 @@ def pre_matching_ps_diagnostics(work, treatment_col):
             "control": {**quantiles(ps_logit_vals[~tmask]), "n": n_c},
         },
         "nn_distance_ps_before": nearest_distance_summary(ps_vals, tmask),
-        "nn_distance_ps_logit_before": nearest_distance_summary(
-            ps_logit_vals, tmask
-        ),
+        "nn_distance_ps_logit_before": nearest_distance_summary(ps_logit_vals, tmask),
     }
 
 
@@ -848,9 +846,7 @@ def compute_strata_counts(work, exact_cols, treatment_col):
     (strata_counts_df, overlap_summary_dict)
     """
     g = work.groupby(exact_cols, dropna=False, observed=True)[treatment_col]
-    sc = g.agg(
-        size="size", n_treated=lambda s: int(s.astype(bool).sum())
-    ).reset_index()
+    sc = g.agg(size="size", n_treated=lambda s: int(s.astype(bool).sum())).reset_index()
     sc["n_control"] = sc["size"] - sc["n_treated"]
     sc["mean"] = sc["n_treated"] / sc["size"]
 
@@ -860,9 +856,7 @@ def compute_strata_counts(work, exact_cols, treatment_col):
     overlap_summary = {
         "n_strata": n_strata,
         "n_overlap_strata": n_overlap,
-        "pct_overlap_strata": float(100 * n_overlap / n_strata)
-        if n_strata
-        else np.nan,
+        "pct_overlap_strata": float(100 * n_overlap / n_strata) if n_strata else np.nan,
     }
 
     return sc, overlap_summary
@@ -881,9 +875,9 @@ def compute_match_retention(strata_counts_before, matched_t, exact_cols):
     if strata_counts_before.empty:
         return pd.DataFrame()
 
-    before_sizes = strata_counts_before[
-        exact_cols + ["size", "n_treated"]
-    ].rename(columns={"size": "size_before", "n_treated": "n_treated_before"})
+    before_sizes = strata_counts_before[exact_cols + ["size", "n_treated"]].rename(
+        columns={"size": "size_before", "n_treated": "n_treated_before"}
+    )
     treated_after = (
         matched_t.groupby(exact_cols, dropna=False, observed=True)
         .size()
@@ -910,9 +904,7 @@ def dose_strata_diagnostics(work, exact_cols, treatment_col):
     Returns dict with 'strata_counts' and 'overlap_summary'.
     """
     g_ct = work.groupby(exact_cols, dropna=False, observed=True)[treatment_col]
-    sc = g_ct.agg(
-        size="size", n_treated=lambda s: int(s.sum())
-    ).reset_index()
+    sc = g_ct.agg(size="size", n_treated=lambda s: int(s.sum())).reset_index()
     sc["n_control"] = sc["size"] - sc["n_treated"]
     overlap = (sc["n_treated"] > 0) & (sc["n_control"] > 0)
     return {
@@ -920,9 +912,7 @@ def dose_strata_diagnostics(work, exact_cols, treatment_col):
         "overlap_summary": {
             "n_strata": int(len(sc)),
             "n_overlap": int(overlap.sum()),
-            "pct_overlap": float(100 * overlap.sum() / len(sc))
-            if len(sc)
-            else np.nan,
+            "pct_overlap": float(100 * overlap.sum() / len(sc)) if len(sc) else np.nan,
         },
     }
 
@@ -1077,19 +1067,19 @@ def run_psm_diagnostics(df, psm_results, treatment_col="hasCRB"):
     diag["e_values"] = e_vals
 
     # 7. PS specification sensitivity
-    print("    PS Specification sensitivity ...")
-    if not df.empty and treatment_col in df.columns and "tempImpactBps" in df.columns:
-        diag["spec_sensitivity"] = ps_specification_sensitivity(
-            df,
-            treatment_col,
-            available_covs,
-            exact_cols,
-            "tempImpactBps",
-            caliper_mult=0.2,
-            n_neighbors=N_NEIGHBORS,
-        )
-    else:
-        diag["spec_sensitivity"] = pd.DataFrame()
+    # print("    PS Specification sensitivity ...")
+    # if not df.empty and treatment_col in df.columns and "tempImpactBps" in df.columns:
+    #     diag["spec_sensitivity"] = ps_specification_sensitivity(
+    #         df,
+    #         treatment_col,
+    #         available_covs,
+    #         exact_cols,
+    #         "tempImpactBps",
+    #         caliper_mult=0.2,
+    #         n_neighbors=N_NEIGHBORS,
+    #     )
+    # else:
+    #     diag["spec_sensitivity"] = pd.DataFrame()
 
     return diag
 
@@ -1147,10 +1137,30 @@ def att_heterogeneity_scan(
         matched_t[["pair_id"] + extra_cols], on="pair_id", how="left"
     )
 
-    default_skip = {"pair_id", "diff", "control_mean", outcome, "ps", "ps_logit",
-                    "match_weight"}
+    default_skip = {
+        "pair_id",
+        "diff",
+        "control_mean",
+        outcome,
+        "ps",
+        "ps_logit",
+        "match_weight",
+    }
     if skip_cols:
         default_skip |= set(skip_cols)
+
+    pair_diffs["EffectiveStartTime"] = pd.to_datetime(
+        pair_diffs["EffectiveStartTime"], format="%Y-%m-%d %H:%M:%S.%f"
+    )
+    pair_diffs["EffectiveEndTime"] = pd.to_datetime(
+        pair_diffs["EffectiveEndTime"], format="%Y-%m-%d %H:%M:%S.%f"
+    )
+    pair_diffs["EffectiveStartTime"] = (
+        pair_diffs["EffectiveStartTime"].dt.hour * 60
+    ) + (pair_diffs["EffectiveStartTime"].dt.minute)
+    pair_diffs["EffectiveEndTime"] = (pair_diffs["EffectiveEndTime"].dt.hour * 60) + (
+        pair_diffs["EffectiveEndTime"].dt.minute
+    )
 
     candidates = [c for c in pair_diffs.columns if c not in default_skip]
     diffs = pair_diffs["diff"].values
@@ -1159,6 +1169,23 @@ def att_heterogeneity_scan(
     cont_rows = []
 
     for col in candidates:
+        if col not in [
+            "Notional",
+            "EffectiveStartTime",
+            "EffectiveEndTime",
+            "qtyOverADV",
+            "PcpRate",
+            "RiskAversion",
+            "ATSPINQty",
+            "LitQty",
+            "ELPQty",
+            "adv",
+            "tickrule",
+            "dailyvol",
+            "duration_mins",
+        ]:
+            continue
+        print(col)
         vals = pair_diffs[col]
         n_unique = vals.nunique()
         if n_unique < 2:
@@ -1170,14 +1197,17 @@ def att_heterogeneity_scan(
                 if len(grp) < min_group_size:
                     continue
                 g_diffs = grp["diff"].values
-                cat_rows.append({
-                    "column": col,
-                    "value": str(value),
-                    "att": float(np.nanmean(g_diffs)),
-                    "count": len(g_diffs),
-                    "std": float(np.nanstd(g_diffs, ddof=1))
-                    if len(g_diffs) > 1 else np.nan,
-                })
+                cat_rows.append(
+                    {
+                        "column": col,
+                        "value": str(value),
+                        "att": float(np.nanmean(g_diffs)),
+                        "count": len(g_diffs),
+                        "std": float(np.nanstd(g_diffs, ddof=1))
+                        if len(g_diffs) > 1
+                        else np.nan,
+                    }
+                )
         else:
             # Continuous scan
             col_vals = vals.values.astype(float)
@@ -1186,30 +1216,26 @@ def att_heterogeneity_scan(
                 continue
 
             corr = float(np.corrcoef(col_vals[valid], diffs[valid])[0, 1])
-            if abs(corr) < corr_threshold:
-                continue
 
             # Bin into quantiles
-            try:
-                pair_diffs["_bin"] = pd.qcut(
-                    vals, q=n_quantile_bins, duplicates="drop"
-                )
-            except ValueError:
-                continue
+            pair_diffs["_bin"] = pd.qcut(vals, q=n_quantile_bins, duplicates="drop")
 
             for bin_label, grp in pair_diffs.groupby("_bin", observed=True):
                 if len(grp) < min_group_size:
                     continue
                 g_diffs = grp["diff"].values
-                cont_rows.append({
-                    "column": col,
-                    "correlation": corr,
-                    "bin": str(bin_label),
-                    "att": float(np.nanmean(g_diffs)),
-                    "count": len(g_diffs),
-                    "std": float(np.nanstd(g_diffs, ddof=1))
-                    if len(g_diffs) > 1 else np.nan,
-                })
+                cont_rows.append(
+                    {
+                        "column": col,
+                        "correlation": corr,
+                        "bin": str(bin_label),
+                        "att": float(np.nanmean(g_diffs)),
+                        "count": len(g_diffs),
+                        "std": float(np.nanstd(g_diffs, ddof=1))
+                        if len(g_diffs) > 1
+                        else np.nan,
+                    }
+                )
 
             pair_diffs.drop(columns=["_bin"], inplace=True)
 
@@ -1217,3 +1243,13 @@ def att_heterogeneity_scan(
         "categorical": pd.DataFrame(cat_rows),
         "continuous": pd.DataFrame(cont_rows),
     }
+
+
+if __name__ == "__main__":
+    matched_t = pd.read_csv("output/results/psm_matched_t.csv")
+    matched_c_long = pd.read_csv("output/results/psm_matched_c_long.csv")
+    matched_t = matched_t.loc[matched_t.Strategy == "VWAP"]
+    matched_c_long = matched_c_long.loc[matched_c_long.Strategy == "VWAP"]
+    results = att_heterogeneity_scan(matched_t, matched_c_long, outcome="tempImpactBps")
+    results["categorical"].to_csv("output/results/categorical.csv")
+    results["continuous"].to_csv("output/results/continuous.csv")

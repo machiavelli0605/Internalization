@@ -900,11 +900,11 @@ def compute_dose_response_psm(df, caliper_mult=0.2):
 
 def run_full_parent_analysis(df, cluster_col="RIC"):
     """Execute all parent-level analyses and return combined results dict."""
-    print("  [1/5] Descriptive analysis ...")
-    desc = descriptive_summary(df)
+    # print("  [1/5] Descriptive analysis ...")
+    # desc = descriptive_summary(df)
 
-    print("  [2/5] OLS regressions ...")
-    reg = run_all_regressions(df, cluster_col=cluster_col)
+    # print("  [2/5] OLS regressions ...")
+    # reg = run_all_regressions(df, cluster_col=cluster_col)
 
     print("  [3/5] Propensity score analysis ...")
     psm = run_psm_analysis(df)
@@ -912,13 +912,13 @@ def run_full_parent_analysis(df, cluster_col="RIC"):
     print("  [3b/5] PSM diagnostics ...")
     psm_diag = run_psm_diagnostics(df, psm)
 
-    print("  [4/5] Dose-response PSM ...")
-    dr = compute_dose_response_psm(df)
+    # print("  [4/5] Dose-response PSM ...")
+    # dr = compute_dose_response_psm(df)
 
     return {
-        "descriptive": desc,
-        "regression": reg,
+        # "descriptive": desc,
+        # "regression": reg,
         "psm": psm,
         "psm_diagnostics": psm_diag,
-        "dose_response": dr,
+        # "dose_response": dr,
     }
