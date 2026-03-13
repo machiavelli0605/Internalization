@@ -31,6 +31,7 @@ import pandas as pd
 
 COMPLETION_PCTS = list(range(0, 91, 10))  # 0, 10, 20, ..., 100
 IMPACT_COLS = [f"{p}CumImpactFill" for p in COMPLETION_PCTS]
+EXP_IMPACT_COLS = [f"{p}ExpImpact" for p in COMPLETION_PCTS]
 WEIGHT_COLS = [f"{p}CumNotional" for p in COMPLETION_PCTS]
 
 N_BOOT = 1000
@@ -81,6 +82,7 @@ def _weighted_mean(vals: np.ndarray, weights: np.ndarray) -> float:
 def weighted_avg_profile(
     df: pd.DataFrame,
     match_weight_col: pd.Series | None = None,
+    impact_cols: list[str] | None = None,
     n_boot: int = N_BOOT,
     ci: float = CI_LEVEL,
     seed: int = 42,
@@ -96,13 +98,15 @@ def weighted_avg_profile(
 
     Returns (means, ci_lo, ci_hi) arrays of length len(COMPLETION_PCTS).
     """
+    if impact_cols is None:
+        impact_cols = IMPACT_COLS
     rng = np.random.RandomState(seed)
     alpha = (1 - ci) / 2
     means = np.full(len(COMPLETION_PCTS), np.nan, dtype=float)
     ci_lo = np.full(len(COMPLETION_PCTS), np.nan, dtype=float)
     ci_hi = np.full(len(COMPLETION_PCTS), np.nan, dtype=float)
 
-    for i, (icol, wcol) in enumerate(zip(IMPACT_COLS, WEIGHT_COLS)):
+    for i, (icol, wcol) in enumerate(zip(impact_cols, WEIGHT_COLS)):
         mask = df[icol].notna() & df[wcol].notna()
 
         if match_weights_col is not None:
@@ -198,6 +202,24 @@ def main():
         seed=42,
     )
 
+    # --- Expected impact (from precalibrated market impact model) ---
+    treat_exp_mean, treat_exp_lo, treat_exp_hi = weighted_avg_profile(
+        treat_impact,
+        match_weight_col=None,
+        impact_cols=EXP_IMPACT_COLS,
+        n_boot=args.n_boot,
+        ci=args.ci,
+        seed=42,
+    )
+    ctrl_exp_mean, ctrl_exp_lo, ctrl_exp_hi = weighted_avg_profile(
+        ctrl_impact,
+        match_weight_col="match_weight",
+        impact_cols=EXP_IMPACT_COLS,
+        n_boot=args.n_boot,
+        ci=args.ci,
+        seed=42,
+    )
+
     # --- Plot ---
     fig, ax = plt.subplots(figsize=(10, 6))
     pcts = COMPLETION_PCTS
@@ -207,6 +229,12 @@ def main():
 
     ax.plot(pcts, ctrl_mean, marker="s", label="Control (non-CRB)", color="#d62728")
     ax.fill_between(pcts, ctrl_lo, ctrl_hi, color="#d62728", alpha=0.15)
+
+    ax.plot(pcts, treat_exp_mean, marker="o", linestyle=":", label="Treatment Expected", color="#2ca02c")
+    ax.fill_between(pcts, treat_exp_lo, treat_exp_hi, color="#2ca02c", alpha=0.08)
+
+    ax.plot(pcts, ctrl_exp_mean, marker="s", linestyle=":", label="Control Expected", color="#d62728")
+    ax.fill_between(pcts, ctrl_exp_lo, ctrl_exp_hi, color="#d62728", alpha=0.08)
 
     ax.set_xlabel("Order Completion (%)")
     ax.set_ylabel("Market Impact (bps)")
